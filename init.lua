@@ -29,7 +29,8 @@ vim.opt.laststatus = 3
 vim.opt.showmode = false
 vim.opt.winborder = 'rounded'
 vim.opt.pumheight = 8
-vim.opt.shell = '/usr/bin/fish'
+local fish = vim.fn.exepath('fish')
+if fish ~= '' then vim.opt.shell = fish end
 
 -- Use the user's Rust toolchain without changing the login shell.
 vim.env.PATH = vim.fn.expand('~/.cargo/bin') .. ':' .. vim.fn.expand('~/.local/bin') .. ':' .. vim.env.PATH
@@ -71,6 +72,17 @@ require('lazy').setup({
   { 'folke/which-key.nvim', opts = {} },
   { 'nvim-mini/mini.pairs', version = false, opts = {} },
   { 'nvim-mini/mini.surround', version = false, opts = {} },
+  { 'nvim-treesitter/nvim-treesitter', lazy = false, build = ':TSUpdate',
+    config = function()
+      vim.api.nvim_create_autocmd('FileType', {
+        pattern = { 'rust', 'c', 'cpp' },
+        callback = function(event)
+          -- A missing parser leaves the built-in syntax highlighting intact.
+          pcall(vim.treesitter.start, event.buf)
+        end,
+        desc = 'Highlight Rust, C and C++ with Tree-sitter when installed',
+      })
+    end },
   { 'nvim-telescope/telescope.nvim', dependencies = { 'nvim-lua/plenary.nvim' }, opts = {} },
   { 'stevearc/oil.nvim',
     dependencies = { { 'nvim-mini/mini.icons', opts = {} } },
@@ -115,17 +127,23 @@ require('lazy').setup({
   } },
   { 'mrcjkb/rustaceanvim', version = '8.*', lazy = false, dependencies = { 'saghen/blink.cmp' },
     init = function()
-      -- Use the real binary so a project's custom toolchain can still provide Cargo.
-      local rust_analyzer = vim.fn.systemlist({ 'rustup', 'which', '--toolchain', 'stable', 'rust-analyzer' })[1]
-      if vim.v.shell_error ~= 0 or not rust_analyzer or vim.fn.executable(rust_analyzer) ~= 1 then
-        vim.notify('Install rust-analyzer with: rustup component add rust-analyzer --toolchain stable',
-          vim.log.levels.ERROR)
-        rust_analyzer = 'rust-analyzer'
-      end
       vim.g.rustaceanvim = {
         tools = { code_actions = { ui_select_fallback = true } },
         server = {
-          cmd = { rust_analyzer },
+          cmd = function()
+            -- Resolve from the Rust file's directory, even if Neovim was opened elsewhere.
+            local cwd = vim.fn.expand('%:p:h')
+            if cwd == '' then cwd = vim.fn.getcwd() end
+            local result = vim.system({ 'rustup', 'which', 'rust-analyzer' },
+              { cwd = cwd, text = true }):wait()
+            local rust_analyzer = result.stdout and vim.trim(result.stdout) or ''
+            if result.code ~= 0 or vim.fn.executable(rust_analyzer) ~= 1 then
+              vim.notify('Install rust-analyzer for the project toolchain with rustup component add rust-analyzer',
+                vim.log.levels.ERROR)
+              return { 'rust-analyzer' }
+            end
+            return { rust_analyzer }
+          end,
           capabilities = require('blink.cmp').get_lsp_capabilities(),
           default_settings = { ['rust-analyzer'] = {
             cargo = { buildScripts = { enable = true } },
@@ -254,6 +272,8 @@ vim.api.nvim_create_autocmd('LspAttach', {
       bind('<leader>rm', '<cmd>RustLsp expandMacro<cr>', 'Expand Rust macro')
       bind('<leader>re', '<cmd>RustLsp explainError current<cr>', 'Explain Rust error')
       bind('<leader>ca', '<cmd>RustLsp codeAction<cr>', 'Rust code actions')
+    elseif client and client.name == 'clangd' then
+      bind('<leader>ch', '<cmd>LspClangdSwitchSourceHeader<cr>', 'Switch C/C++ source and header')
     end
   end,
 })

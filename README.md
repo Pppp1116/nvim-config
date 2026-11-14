@@ -15,6 +15,7 @@ modified buffers. Snippet selection does not trigger formatting.
 | Space rn / ca | Rename symbol / code action |
 | Space rr / rt | Rust run targets / tests |
 | Space rm / re | Expand Rust macro / explain Rust error |
+| Space ch (C/C++) | Switch between source and header with clangd |
 | Space ih | Toggle inferred type and parameter hints (enabled by default) |
 | Space f | Format current file using its language server |
 | Space d / q | Diagnostic popup / diagnostic list |
@@ -85,7 +86,8 @@ Leaving insert mode for normal mode runs the same format-and-save action; enteri
 Inline diagnostics stay visible and refresh while you edit; `cargo check` diagnostics
 refresh after the save completes.
 
-Rust uses ~/.cargo/bin/rust-analyzer, rustfmt and Clippy from rustup.
+Rust Analyzer is selected by rustup from each Rust file's project toolchain,
+even when Neovim was started outside the project. rustfmt and Clippy also use rustup.
 Rustaceanvim manages the single Rust language server, with `cargo check` on save,
 build scripts, procedural macros, auto-import/snippet completion, run/test targets,
 macro expansion and error explanations. Rust-src is installed for standard-library
@@ -93,9 +95,11 @@ navigation. Cargo uses normal default features rather than forcing all features.
 Per-project rust-analyzer.json settings can override the defaults. For example:
 `{"rust-analyzer":{"cargo":{"features":["your-feature"]}}}`.
 Use :RustAnalyzer restart after changing toolchains, and :RustLsp for Rust tools.
-Rustaceanvim is pinned to version 8 for the installed Neovim 0.11 compatibility.
+Rustaceanvim is pinned to version 8 for this Neovim setup.
 C and C++ use `clangd` from PATH. External tools are managed outside Neovim.
 clangd uses background indexing, clang-tidy diagnostics and detailed completions.
+Rust, C and C++ use Tree-sitter syntax highlighting. The parsers are installed
+locally; `:TSUpdate` refreshes them after a plugin update.
 Use :checkhealth vim.lsp to troubleshoot, :Lazy to manage plugins.
 The lazy-lock.json file records installed plugin revisions.
 
