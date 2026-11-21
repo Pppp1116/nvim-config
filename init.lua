@@ -55,7 +55,8 @@ require('lazy').setup({
       lualine_a = { { 'mode', fmt = function(s) return s:sub(1, 1) end } },
       lualine_b = { { 'branch', cond = function() return vim.o.columns >= 90 end } },
       lualine_c = { { 'filename', path = 0, shorting_target = function() return math.floor(vim.o.columns * 0.6) end } },
-      lualine_x = { { 'diagnostics', sources = { 'nvim_lsp' }, sections = { 'error', 'warn' },
+      lualine_x = { { 'diagnostics', cond = function() return vim.diagnostic.is_enabled() end,
+        sources = { 'nvim_lsp' }, sections = { 'error', 'warn' },
         symbols = { error = 'E:', warn = 'W:' } } },
       lualine_y = { { 'filetype', cond = function() return vim.o.columns >= 90 end } },
       lualine_z = { 'location' },
@@ -75,12 +76,12 @@ require('lazy').setup({
   { 'nvim-treesitter/nvim-treesitter', lazy = false, build = ':TSUpdate',
     config = function()
       vim.api.nvim_create_autocmd('FileType', {
-        pattern = { 'rust', 'c', 'cpp' },
+        pattern = { 'rust', 'c', 'cpp', 'asm', 'nasm' },
         callback = function(event)
           -- A missing parser leaves the built-in syntax highlighting intact.
           pcall(vim.treesitter.start, event.buf)
         end,
-        desc = 'Highlight Rust, C and C++ with Tree-sitter when installed',
+        desc = 'Highlight Rust, C, C++ and assembly with Tree-sitter when installed',
       })
     end },
   { 'nvim-telescope/telescope.nvim', dependencies = { 'nvim-lua/plenary.nvim' }, opts = {} },
@@ -190,39 +191,49 @@ require('lazy').setup({
         },
       })
       vim.lsp.enable('basedpyright')
+      vim.lsp.config('asm_lsp', {
+        filetypes = { 'asm', 'nasm', 'vmasm' },
+        capabilities = require('blink.cmp').get_lsp_capabilities(),
+      })
+      vim.lsp.enable('asm_lsp')
     end },
 }, { install = { missing = false }, checker = { enabled = false }, change_detection = { notify = false } })
 
 local map = vim.keymap.set
 map('i', 'jk', '<Esc>', { desc = 'Leave insert mode' })
 map('t', '<Esc>', '<C-\\><C-n>', { desc = 'Enter terminal normal mode' })
-local function format_and_save_all()
-  if #vim.lsp.get_clients({ bufnr = 0, method = 'textDocument/formatting' }) > 0 then
+local function format_and_save_all(bufnr)
+  bufnr = type(bufnr) == 'number' and bufnr or vim.api.nvim_get_current_buf()
+  if #vim.lsp.get_clients({ bufnr = bufnr, method = 'textDocument/formatting' }) > 0 then
     -- Finish formatting before writing so the formatted text reaches disk.
-    local ok, err = pcall(vim.lsp.buf.format, { async = false, timeout_ms = 2000 })
+    local ok, err = pcall(vim.lsp.buf.format, { bufnr = bufnr, async = false, timeout_ms = 2000 })
     if not ok then
       vim.notify('Formatting failed; saving current text: ' .. tostring(err), vim.log.levels.WARN)
     end
   end
-  vim.cmd.wall()
+  require('workflows').save_all()
 end
-map({ 'n', 'i', 'v' }, '<C-s>', format_and_save_all, { desc = 'Format current file and save all buffers' })
+map({ 'n', 'i' }, '<C-s>', format_and_save_all, { desc = 'Format current file and save all buffers' })
+map('x', '<C-s>', function()
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<Esc>', true, false, true), 'nx', false)
+  format_and_save_all()
+end, { desc = 'Format current file and save all buffers' })
 vim.api.nvim_create_autocmd('InsertLeave', {
   group = vim.api.nvim_create_augroup('UserFormatAndSaveOnInsertLeave', { clear = true }),
-  callback = function()
-    local buf = vim.api.nvim_get_current_buf()
+  callback = function(event)
+    local buf = event.buf
     -- Snippet placeholders can enter Select mode and trigger InsertLeave.
     -- Wait for the mode transition before deciding whether to format.
     vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(buf) or vim.api.nvim_get_current_buf() ~= buf then return end
+      if not vim.api.nvim_buf_is_loaded(buf) then return end
       local mode = vim.api.nvim_get_mode().mode
       if mode:match('^[sS]') or mode == '\19' then return end
-      if mode:match('^n') then format_and_save_all() end
+      if mode:match('^n') then format_and_save_all(buf) end
     end)
   end,
   desc = 'Format and save after leaving insert mode for normal mode',
 })
-map('n', '<leader>w', '<cmd>wall<cr>', { desc = 'Save all modified buffers' })
+map('n', '<leader>w', function() require('workflows').save_all() end, { desc = 'Save all named modified buffers' })
 map('n', '<leader><space>', '<cmd>Oil<cr>', { desc = 'Browse files' })
 map('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { desc = 'Find files' })
 map('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { desc = 'Search project text' })
@@ -236,13 +247,8 @@ map('n', '<C-l>', '<C-w>l', { desc = 'Focus right split' })
 map('n', '<leader>d', vim.diagnostic.open_float, { desc = 'Show diagnostic' })
 local inline_diagnostic_options = { spacing = 2 }
 map('n', '<leader>ud', function()
-  local enabled = vim.diagnostic.config().virtual_text
-  if enabled then
-    vim.diagnostic.config({ virtual_text = false, underline = false })
-  else
-    vim.diagnostic.config({ virtual_text = inline_diagnostic_options, underline = true })
-  end
-end, { desc = 'Toggle inline diagnostics and underlines' })
+  vim.diagnostic.enable(not vim.diagnostic.is_enabled())
+end, { desc = 'Toggle all diagnostics' })
 map('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'List diagnostics' })
 map('n', '<leader>f', function() vim.lsp.buf.format({ async = true }) end, { desc = 'Format file' })
 

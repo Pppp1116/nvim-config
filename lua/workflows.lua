@@ -1,6 +1,16 @@
 local M = {}
 local build_job
 local last_commands = {}
+local terminal_cwd
+
+local function current_list()
+  if vim.bo.buftype ~= 'quickfix' then return nil end
+  local is_loclist = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].loclist == 1
+  if is_loclist then
+    return vim.fn.getloclist(0, { items = 1, context = 1, filewinid = 1 }), true
+  end
+  return vim.fn.getqflist({ items = 1, context = 1 }), false
+end
 
 local function stop_build(force)
   local job = build_job
@@ -16,9 +26,54 @@ local function stop_build(force)
 end
 
 function M.root()
+  if vim.bo.buftype == 'terminal' then
+    local cwd = terminal_cwd()
+    if cwd then
+      return vim.fs.root(cwd, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or cwd
+    end
+  end
   local name = vim.api.nvim_buf_get_name(0)
+  if name:match('^oil://') then
+    local cwd = require('oil').get_current_dir()
+    if cwd then
+      return vim.fs.root(cwd, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or cwd
+    end
+  end
+  local list = current_list()
+  if list then
+    local context = list.context
+    if type(context) == 'table' and type(context.cwd) == 'string'
+        and vim.fn.isdirectory(context.cwd) == 1 then
+      return context.cwd
+    end
+    local item = list.items[vim.fn.line('.')]
+    if not item or item.valid ~= 1 then
+      for _, candidate in ipairs(list.items) do
+        if candidate.valid == 1 then item = candidate; break end
+      end
+    end
+    if item and item.bufnr > 0 then
+      local filename = vim.api.nvim_buf_get_name(item.bufnr)
+      if filename ~= '' then
+        return vim.fs.root(filename, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' })
+          or vim.fs.dirname(filename)
+      end
+    end
+  end
   local start = name ~= '' and vim.fs.dirname(name) or vim.fn.getcwd()
   return vim.fs.root(start, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or vim.fn.getcwd()
+end
+
+function M.save_all()
+  for _, info in ipairs(vim.fn.getbufinfo({ bufloaded = 1, bufmodified = 1 })) do
+    local bufnr = info.bufnr
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local buftype = vim.bo[bufnr].buftype
+      if vim.api.nvim_buf_get_name(bufnr) ~= '' and (buftype == '' or buftype == 'acwrite') then
+        vim.api.nvim_buf_call(bufnr, function() vim.cmd.write() end)
+      end
+    end
+  end
 end
 
 local function source_location(text)
@@ -45,14 +100,17 @@ local function diagnostic_heading(text)
   return text:match('^%s*error') or text:match('^%s*warning')
 end
 
-local function terminal_cwd()
+terminal_cwd = function()
   if vim.bo.buftype ~= 'terminal' then return nil end
   local job = vim.b.terminal_job_id
   if job then
-    local pid = vim.fn.jobpid(job)
-    if pid > 0 then
+    local ok, pid = pcall(vim.fn.jobpid, job)
+    if ok and pid > 0 then
       local cwd = vim.fn.resolve('/proc/' .. pid .. '/cwd')
-      if vim.fn.isdirectory(cwd) == 1 then return cwd end
+      if vim.fn.isdirectory(cwd) == 1 then
+        vim.b.compiler_terminal_cwd = cwd
+        return cwd
+      end
     end
   end
   return vim.b.compiler_terminal_cwd
@@ -63,8 +121,9 @@ function M.jump_to_compiler_location()
   local row = vim.fn.line('.')
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   local path, line, column = source_location(lines[row] or '')
-  if vim.bo.buftype == 'quickfix' then
-    local items = vim.fn.getqflist({ items = 1 }).items
+  local list, is_loclist = current_list()
+  if list then
+    local items = list.items
     local function select_item(index)
       local item = items[index]
       if item and item.valid == 1 and item.bufnr > 0 then
@@ -136,10 +195,38 @@ function M.jump_to_compiler_location()
     vim.notify('Source file not found: ' .. path, vim.log.levels.WARN)
     return
   end
+  if list then
+    local target = is_loclist and list.filewinid or vim.fn.win_getid(vim.fn.winnr('#'))
+    local function editor_window(win)
+      return win and win > 0 and vim.api.nvim_win_is_valid(win)
+        and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
+        and vim.fn.getwininfo(win)[1].quickfix == 0
+    end
+    if not editor_window(target) then
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        if editor_window(win) then target = win; break end
+      end
+    end
+    if editor_window(target) then vim.api.nvim_set_current_win(target) end
+  end
   vim.cmd.edit(vim.fn.fnameescape(filename))
   local target = math.max(1, math.min(line or 1, vim.api.nvim_buf_line_count(0)))
   local text = vim.api.nvim_buf_get_lines(0, target - 1, target, false)[1]
-  vim.api.nvim_win_set_cursor(0, { target, math.max(0, math.min((column or 1) - 1, #text)) })
+  local byte_col = math.max(0, (column or 1) - 1)
+  local char_col = vim.str_byteindex(text, 'utf-32', byte_col, false)
+  if char_col ~= byte_col then
+    if vim.bo.filetype == 'rust' then
+      byte_col = char_col
+    else
+      -- GCC counts characters; Clang counts bytes. Prefer the candidate at a token start.
+      local function word_start(offset)
+        return text:sub(offset + 1, offset + 1):match('[%w_]')
+          and not text:sub(offset, offset):match('[%w_]')
+      end
+      if word_start(char_col) and not word_start(byte_col) then byte_col = char_col end
+    end
+  end
+  vim.api.nvim_win_set_cursor(0, { target, math.min(byte_col, #text) })
   vim.cmd('normal! zz')
 end
 
@@ -166,7 +253,7 @@ function M.build(command)
       end
     end
   end
-  local ok, err = pcall(vim.cmd, 'wall')
+  local ok, err = pcall(M.save_all)
   if not ok then vim.notify(tostring(err), vim.log.levels.ERROR); return end
   last_commands[root] = command
   local efm = '%f:%l:%c: %m,%f:%l: %m,' .. vim.o.errorformat
@@ -181,7 +268,13 @@ function M.build(command)
         return
       end
       local succeeded = result.code == 0 and (result.signal or 0) == 0
-      local output = (result.stdout or '') .. (result.stderr or '')
+      local stdout, stderr = result.stdout or '', result.stderr or ''
+      local output = stdout .. (stdout ~= '' and stderr ~= '' and not stdout:match('\n$') and '\n' or '') .. stderr
+      if not succeeded and output == '' then
+        local reason = (result.signal or 0) ~= 0 and ('signal ' .. result.signal)
+          or ('status ' .. tostring(result.code or 'unknown'))
+        output = 'Build command ended with ' .. reason .. ' and produced no output'
+      end
       local cwd = vim.fn.getcwd()
       -- Resolve relative compiler paths against the build directory.
       vim.fn.chdir(root)
@@ -218,7 +311,7 @@ function M.setup_debugger()
     end
     callback({ type = 'executable', command = command })
   end
-  for _, ft in ipairs({ 'rust', 'c', 'cpp' }) do
+  for _, ft in ipairs({ 'rust', 'c', 'cpp', 'asm', 'nasm' }) do
     dap.configurations[ft] = { {
       name = 'Launch executable (system LLDB)', type = 'lldb', request = 'launch',
       program = function()
@@ -253,6 +346,17 @@ function M.setup()
       vim.keymap.set('n', 'gd', M.jump_to_compiler_location,
         { buffer = event.buf, desc = 'Go to compiler source location' })
     end,
+  })
+  vim.api.nvim_create_autocmd('TermRequest', {
+    group = jump_group,
+    callback = function(event)
+      if vim.bo[event.buf].buftype ~= 'terminal' then return end
+      local host, encoded_path = event.data.sequence:match('^\27%]7;file://([^/]*)(/[^%c]*)')
+      if not host or (host ~= '' and host ~= 'localhost' and host ~= vim.uv.os_gethostname()) then return end
+      local cwd = vim.uri_decode(encoded_path)
+      if vim.fn.isdirectory(cwd) == 1 then vim.b[event.buf].compiler_terminal_cwd = cwd end
+    end,
+    desc = 'Remember terminal shell directory from OSC 7',
   })
   vim.api.nvim_create_autocmd({ 'FocusGained', 'TermClose' }, {
     group = group, callback = function() vim.cmd('checktime') end,

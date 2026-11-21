@@ -1,16 +1,16 @@
-# Neovim for Rust, C and C++
+# Neovim for Rust, C, C++ and assembly
 
 The leader key is Space. The Mocha theme matches Kitty.
-Type jk quickly to leave insert mode. Leaving insert mode for normal mode formats the current file and saves all
-modified buffers. Snippet selection does not trigger formatting.
+Type jk quickly to leave insert mode. Leaving insert mode for normal mode formats the current file and saves
+modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not trigger formatting.
 
 | Key | Action |
 | --- | --- |
 | Space Space | Oil file browser with file-type and named-folder icons (`-` goes to parent inside Oil) |
 | Space ff | Find files by name |
 | Space fg / fb | Search project / switch buffers |
-| Space w | Save all modified buffers |
-| Ctrl+S | Format current file, then save all modified buffers (normal, insert or visual mode) |
+| Space w | Save all modified named buffers |
+| Ctrl+S | Format current file, then save modified named buffers (normal, insert or visual mode) |
 | gd / grr / K | Definition / references / documentation |
 | Space rn / ca | Rename symbol / code action |
 | Space rr / rt | Rust run targets / tests |
@@ -19,7 +19,7 @@ modified buffers. Snippet selection does not trigger formatting.
 | Space ih | Toggle inferred type and parameter hints (enabled by default) |
 | Space f | Format current file using its language server |
 | Space d / q | Diagnostic popup / diagnostic list |
-| Space u d | Toggle inline diagnostic messages and error/warning underlines |
+| Space u d | Toggle all diagnostics, including inline messages, signs, underlines, and status bar counts |
 | ]d / [d | Next / previous diagnostic |
 | Ctrl+Space | Open completion |
 | Ctrl+N / Ctrl+P / Ctrl+Y | Next / previous / accept completion |
@@ -43,7 +43,7 @@ Persistent undo is stored in Neovim's state directory across restarts. Unmodifie
 file buffers reload after external changes, including branch switches. Checks run
 on focus and terminal exit; unsaved edits are preserved.
 
-Builds save modified files, run asynchronously from the project root, and fill
+Builds save modified named files, run asynchronously from the project root, and fill
 quickfix with compiler output. Defaults are `cargo build --message-format=short`,
 `cmake --build build` (when configured), or `make`. Use `:Build your command` or
 Space bc to override; Space bb repeats that project's last command for this session.
@@ -56,7 +56,7 @@ Relative terminal paths use the shell's current directory, including after `cd`.
 
 New plugins are declared but require downloading: run `:Lazy install` once.
 Automatic missing-plugin downloads at startup are disabled so offline launches work.
-Debugging uses nvim-dap with the system `lldb-dap` for Rust/C/C++. Install the
+Debugging uses nvim-dap with the system `lldb-dap` for Rust/C/C++/assembly. Install the
 `lldb` package on Fedora and keep `lldb-dap` on PATH. Loading the debugger does
 not trigger downloads.
 Build first with debug symbols (Cargo's default debug build, or CMake Debug),
@@ -80,9 +80,9 @@ The menu has at most 8 rows. Labels are capped at 36 columns, documentation at
 The global status bar shows a short mode, filename, diagnostic counts and cursor
 position; Git branch and file type only appear at terminal widths of 90 or more.
 Ctrl+S formats the current file through the attached language server, then saves
-all modified buffers. It still saves all buffers when no formatter is attached.
+modified named buffers. It still saves named buffers when no formatter is attached.
 Leaving insert mode for normal mode runs the same format-and-save action; entering a snippet selection does not.
-:w saves the current buffer; Space w saves all modified buffers without formatting.
+:w saves the current buffer; Space w saves modified named buffers without formatting.
 Inline diagnostics stay visible and refresh while you edit; `cargo check` diagnostics
 refresh after the save completes.
 
@@ -98,8 +98,11 @@ Use :RustAnalyzer restart after changing toolchains, and :RustLsp for Rust tools
 Rustaceanvim is pinned to version 8 for this Neovim setup.
 C and C++ use `clangd` from PATH. External tools are managed outside Neovim.
 clangd uses background indexing, clang-tidy diagnostics and detailed completions.
-Rust, C and C++ use Tree-sitter syntax highlighting. The parsers are installed
-locally; `:TSUpdate` refreshes them after a plugin update.
+Rust, C and C++ use locally installed Tree-sitter parsers. Assembly files (`.s`,
+`.S`, `.asm`) and NASM files (`.nasm`) use Tree-sitter after `:TSInstall asm nasm`;
+until then, Neovim's built-in syntax highlighting applies. Install `asm-lsp`
+with `cargo install asm-lsp` for assembly completion and navigation. Run
+`:TSUpdate` to refresh installed parsers after a plugin update.
 Use :checkhealth vim.lsp to troubleshoot, :Lazy to manage plugins.
 The lazy-lock.json file records installed plugin revisions.
 
