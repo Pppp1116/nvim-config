@@ -16,6 +16,7 @@ modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not 
 | Space rr / rt | Rust run targets / tests |
 | Space rm / re | Expand Rust macro / explain Rust error |
 | Space ch (C/C++) | Switch between source and header with clangd |
+| Space lc (LLVM IR) | Validate current buffer with `llvm-as` |
 | Space ih | Toggle inferred type and parameter hints (enabled by default) |
 | Space f | Format current file using its language server |
 | Space d / q | Diagnostic popup / diagnostic list |
@@ -29,9 +30,10 @@ modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not 
 | Ctrl+N (normal/visual) | Select word / add next occurrence for multicursor editing |
 | Ctrl+Up / Ctrl+Down | Add cursor above / below |
 | Space gg / gb / gl / gc | Git status / branches / commit log / commit |
+| Space gB | Full-file Git blame view (close with `q`) |
 | Space ug | Toggle Gitsigns |
 | ]h / [h | Next / previous Git hunk |
-| Space hs / hp / hb | Stage hunk / preview hunk / blame line |
+| Space hs / hp / hb | Stage hunk / preview hunk / blame current line |
 | Space bb / bc / bs | Build or repeat / set build command / stop build |
 | Space bo, ]q / [q | Open quickfix, next / previous build error |
 | gd in quickfix or terminal Normal mode | Open the source line from compiler output |
@@ -42,6 +44,8 @@ modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not 
 Persistent undo is stored in Neovim's state directory across restarts. Unmodified
 file buffers reload after external changes, including branch switches. Checks run
 on focus and terminal exit; unsaved edits are preserved.
+`:term` opens ready for typing in terminal mode. Press Esc to inspect terminal
+output in Normal mode.
 
 Builds save modified named files, run asynchronously from the project root, and fill
 quickfix with compiler output. Defaults are `cargo build --message-format=short`,
@@ -98,7 +102,13 @@ Use :RustAnalyzer restart after changing toolchains, and :RustLsp for Rust tools
 Rustaceanvim is pinned to version 8 for this Neovim setup.
 C and C++ use `clangd` from PATH. External tools are managed outside Neovim.
 clangd uses background indexing, clang-tidy diagnostics and detailed completions.
-Rust, C and C++ use locally installed Tree-sitter parsers. Assembly files (`.s`,
+Accepting a C/C++ completion can add the header clangd identifies for that symbol.
+Rust, C and C++ use locally installed Tree-sitter parsers. LLVM IR (`.ll`) is
+detected as `llvm`; run `:TSInstall llvm` once for highlighting. `llvm-as` checks
+the current buffer after each save and reports errors as inline diagnostics.
+Use `:LLVMCheck` or Space lc to check edits before saving. It reads the buffer
+through standard input and creates no bitcode file. Install `llvm-as` for these checks.
+Assembly files (`.s`,
 `.S`, `.asm`) and NASM files (`.nasm`) use Tree-sitter after `:TSInstall asm nasm`;
 until then, Neovim's built-in syntax highlighting applies. Install `asm-lsp`
 with `cargo install asm-lsp` for assembly completion and navigation. Run
@@ -109,7 +119,12 @@ The lazy-lock.json file records installed plugin revisions.
 For CMake projects, configure with `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
 clangd recognizes a compile_commands.json in build/; for other build directories,
 link compile_commands.json into the project root. This gives it the actual
-compiler flags and include paths. Existing project formatting settings apply.
+compiler flags and include paths. Check that this file is populated; an empty
+`[]` database leaves clangd without the project's compile commands. Existing
+project formatting settings apply.
+For a simple project without CMake, put one compiler flag per line in
+`compile_flags.txt` at the project root. A shared `.h` extension is ambiguous:
+Neovim opens it as C++ by default; use `:setfiletype c` for a C header when needed.
 
 Rust toolchain binaries are added to Neovim's PATH. In a shell, use
 `source ~/.cargo/env` if Cargo is not on your PATH yet.

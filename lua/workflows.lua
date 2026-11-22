@@ -345,6 +345,7 @@ function M.setup()
       vim.b[event.buf].compiler_terminal_cwd = vim.fn.getcwd()
       vim.keymap.set('n', 'gd', M.jump_to_compiler_location,
         { buffer = event.buf, desc = 'Go to compiler source location' })
+      if event.buf == vim.api.nvim_get_current_buf() then vim.cmd.startinsert() end
     end,
   })
   vim.api.nvim_create_autocmd('TermRequest', {
@@ -371,6 +372,7 @@ function M.setup()
   map('n', '<leader>gb', '<cmd>Telescope git_branches<cr>', { desc = 'Git branches' })
   map('n', '<leader>gl', '<cmd>Telescope git_commits<cr>', { desc = 'Git commit log' })
   map('n', '<leader>gc', '<cmd>Git commit<cr>', { desc = 'Git commit' })
+  map('n', '<leader>gB', '<cmd>Git blame<cr>', { desc = 'Blame current file' })
   map('n', '<leader>ug', function() require('gitsigns').toggle_signs() end, { desc = 'Toggle Git signs' })
   map('n', ']h', function() require('gitsigns').nav_hunk('next') end, { desc = 'Next Git hunk' })
   map('n', '[h', function() require('gitsigns').nav_hunk('prev') end, { desc = 'Previous Git hunk' })

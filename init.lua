@@ -29,6 +29,8 @@ vim.opt.laststatus = 3
 vim.opt.showmode = false
 vim.opt.winborder = 'rounded'
 vim.opt.pumheight = 8
+-- Neovim's built-in detection currently assigns .ll to Lifelines.
+vim.filetype.add({ extension = { ll = 'llvm' } })
 local fish = vim.fn.exepath('fish')
 if fish ~= '' then vim.opt.shell = fish end
 
@@ -76,12 +78,12 @@ require('lazy').setup({
   { 'nvim-treesitter/nvim-treesitter', lazy = false, build = ':TSUpdate',
     config = function()
       vim.api.nvim_create_autocmd('FileType', {
-        pattern = { 'rust', 'c', 'cpp', 'asm', 'nasm' },
+        pattern = { 'rust', 'c', 'cpp', 'asm', 'nasm', 'llvm' },
         callback = function(event)
           -- A missing parser leaves the built-in syntax highlighting intact.
           pcall(vim.treesitter.start, event.buf)
         end,
-        desc = 'Highlight Rust, C, C++ and assembly with Tree-sitter when installed',
+        desc = 'Highlight Rust, C, C++, assembly and LLVM IR with Tree-sitter when installed',
       })
     end },
   { 'nvim-telescope/telescope.nvim', dependencies = { 'nvim-lua/plenary.nvim' }, opts = {} },
@@ -225,7 +227,7 @@ vim.api.nvim_create_autocmd('InsertLeave', {
     -- Snippet placeholders can enter Select mode and trigger InsertLeave.
     -- Wait for the mode transition before deciding whether to format.
     vim.schedule(function()
-      if not vim.api.nvim_buf_is_loaded(buf) then return end
+      if not vim.api.nvim_buf_is_loaded(buf) or vim.api.nvim_get_current_buf() ~= buf then return end
       local mode = vim.api.nvim_get_mode().mode
       if mode:match('^[sS]') or mode == '\19' then return end
       if mode:match('^n') then format_and_save_all(buf) end
