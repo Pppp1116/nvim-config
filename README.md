@@ -12,6 +12,7 @@ selection does not trigger formatting.
 | Space Space | Oil file browser with file-type and named-folder icons (`-` goes to parent inside Oil) |
 | Space ff | Find files by name |
 | Space fg / fb | Search project / switch buffers |
+| ]b / [b | Next / previous listed buffer |
 | Space w | Save all modified named buffers |
 | Ctrl+S | Format current file, then save modified named buffers (normal, insert or visual mode) |
 | gd / grr / K | Definition / references / documentation |
@@ -37,8 +38,10 @@ selection does not trigger formatting.
 | Space gg / gb / gl / gc | Git status / branches / commit log / commit |
 | Space gB | Full-file Git blame view (close with `q`) |
 | Space ug | Toggle Gitsigns |
+| Space ub | Toggle concise inline Git blame for the current line (off by default) |
 | ]h / [h | Next / previous Git hunk |
 | Space hs / hp / hb | Stage hunk / preview hunk / blame current line |
+| Space hd | Diff the current file against the Git index with Gitsigns |
 | Space bb / bc / bs | Build or repeat / set build command / stop build |
 | Space tt / tr | Run current LLVM lit test / repeat last lit test; in Rust files, Space tt opens testables |
 | Space bo, ]q / [q | Open quickfix, next / previous build error |
@@ -90,8 +93,18 @@ or `Ctrl+Y` to insert the symbol and its use statement. For an already typed
 unresolved name, Space ca can offer an import fix.
 The menu has at most 8 rows. Labels are capped at 36 columns, documentation at
 60 columns by 12 rows. Signature help appears while entering function arguments.
-The global status bar shows a short mode, filename, diagnostic counts and cursor
-position; Git branch and file type only appear at terminal widths of 90 or more.
+Each source window has a top bar with its path relative to the Git root and, when
+the language server supplies document symbols, its namespace, type and current
+function. Without Git, the path is relative to the working directory when possible.
+Long paths and symbol chains shorten to keep the filename and nearest function
+visible. Terminals, Oil, quickfix and other special windows have no top bar.
+The global status bar shows the short mode, Git branch, filename with modified or
+readonly marker, Git added/changed/deleted counts, diagnostic errors and warnings,
+file type, line and column, and file percentage. Git counts appear at widths of at
+least 100 columns; branch and file type appear at 80 columns. Diagnostic counts
+include language server diagnostics and LLVM IR checks from `llvm-as`.
+Inline blame, when toggled on, appears after a short pause as author, relative
+date and commit summary at the end of the current line.
 `Ctrl+S` formats the current file through the attached language server, then saves
 modified named buffers. It still saves named buffers when no formatter is attached.
 Leaving insert mode for normal mode runs the same action; entering snippet selection

@@ -55,17 +55,31 @@ require('lazy').setup({
       component_separators = '', section_separators = '' },
     sections = {
       lualine_a = { { 'mode', fmt = function(s) return s:sub(1, 1) end } },
-      lualine_b = { { 'branch', cond = function() return vim.o.columns >= 90 end } },
-      lualine_c = { { 'filename', path = 0, shorting_target = function() return math.floor(vim.o.columns * 0.6) end } },
-      lualine_x = { { 'diagnostics', cond = function() return vim.diagnostic.is_enabled() end,
-        sources = { 'nvim_lsp' }, sections = { 'error', 'warn' },
-        symbols = { error = 'E:', warn = 'W:' } } },
-      lualine_y = { { 'filetype', cond = function() return vim.o.columns >= 90 end } },
-      lualine_z = { 'location' },
+      lualine_b = { { 'branch', cond = function() return vim.o.columns >= 80 end } },
+      lualine_c = { { 'filename', path = 0 } },
+      lualine_x = {
+        { 'diff', cond = function() return vim.o.columns >= 100 end,
+          symbols = { added = '+', modified = '~', removed = '-' },
+          source = function()
+            local changes = vim.b.gitsigns_status_dict
+            if not changes then return nil end
+            return { added = changes.added, modified = changes.changed, removed = changes.removed }
+          end },
+        { 'diagnostics', cond = function() return vim.diagnostic.is_enabled() end,
+          sources = { 'nvim_diagnostic' }, sections = { 'error', 'warn' },
+          symbols = { error = 'E:', warn = 'W:' } },
+      },
+      lualine_y = { { 'filetype', cond = function() return vim.o.columns >= 80 end } },
+      lualine_z = { 'location', 'progress' },
     },
     extensions = { 'oil', 'quickfix' },
   } },
-  { 'lewis6991/gitsigns.nvim', opts = {} },
+  { 'lewis6991/gitsigns.nvim', opts = {
+    current_line_blame = false,
+    current_line_blame_opts = { delay = 1000, virt_text_pos = 'eol' },
+    current_line_blame_formatter = '  <author> · <author_time:%R> · <summary>',
+  } },
+  { 'SmiteshP/nvim-navic', opts = { icons = { enabled = false }, lazy_update_context = true } },
   { 'tpope/vim-fugitive', cmd = { 'Git', 'G', 'Gdiffsplit', 'Gvdiffsplit', 'Gread', 'Gwrite' } },
   { 'mg979/vim-visual-multi', branch = 'master',
     keys = { { '<C-n>', mode = { 'n', 'x' } }, { '<C-Down>' }, { '<C-Up>' } },
@@ -247,6 +261,8 @@ map('n', '<leader><space>', '<cmd>Oil<cr>', { desc = 'Browse files' })
 map('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { desc = 'Find files' })
 map('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { desc = 'Search project text' })
 map('n', '<leader>fb', '<cmd>Telescope buffers<cr>', { desc = 'Find open buffers' })
+map('n', ']b', '<cmd>bnext<cr>', { desc = 'Next listed buffer' })
+map('n', '[b', '<cmd>bprevious<cr>', { desc = 'Previous listed buffer' })
 map('n', '<leader>fh', '<cmd>Telescope help_tags<cr>', { desc = 'Search help' })
 map('n', '<Esc>', '<cmd>nohlsearch<cr>')
 map('n', '<C-h>', '<C-w>h', { desc = 'Focus left split' })
@@ -263,10 +279,16 @@ map('n', '<leader>f', function() vim.lsp.buf.format({ async = true }) end, { des
 
 vim.diagnostic.config({ severity_sort = true, underline = true, update_in_insert = true,
   virtual_text = inline_diagnostic_options, float = { border = 'rounded' } })
+require('ui').setup()
 vim.api.nvim_create_autocmd('LspAttach', {
   group = vim.api.nvim_create_augroup('UserLsp', { clear = true }),
   callback = function(event)
     local client = vim.lsp.get_client_by_id(event.data.client_id)
+    if client and client.server_capabilities.documentSymbolProvider
+      and client:supports_method('textDocument/documentSymbol', event.buf) then
+      local navic = require('nvim-navic')
+      if not navic.is_available(event.buf) then navic.attach(client, event.buf) end
+    end
     if client and client:supports_method('textDocument/inlayHint', event.buf) then
       vim.lsp.inlay_hint.enable(true, { bufnr = event.buf })
     end
