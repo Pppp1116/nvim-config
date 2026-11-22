@@ -198,6 +198,13 @@ require('lazy').setup({
         capabilities = require('blink.cmp').get_lsp_capabilities(),
       })
       vim.lsp.enable('asm_lsp')
+      vim.lsp.config('lua_ls', {
+        capabilities = require('blink.cmp').get_lsp_capabilities(),
+        settings = { Lua = { diagnostics = { globals = { 'vim' } },
+          workspace = { checkThirdParty = false,
+            library = vim.api.nvim_get_runtime_file('', true) } } },
+      })
+      vim.lsp.enable('lua_ls')
     end },
 }, { install = { missing = false }, checker = { enabled = false }, change_detection = { notify = false } })
 
@@ -268,6 +275,10 @@ vim.api.nvim_create_autocmd('LspAttach', {
     end
     bind('gd', vim.lsp.buf.definition, 'Go to definition')
     bind('grr', vim.lsp.buf.references, 'Find references')
+    bind('gri', vim.lsp.buf.implementation, 'Go to implementation')
+    bind('grt', vim.lsp.buf.type_definition, 'Go to type definition')
+    bind('<leader>fs', '<cmd>Telescope lsp_document_symbols<cr>', 'Find document symbols')
+    bind('<leader>fS', '<cmd>Telescope lsp_dynamic_workspace_symbols<cr>', 'Find workspace symbols')
     bind('K', vim.lsp.buf.hover, 'Documentation')
     bind('<leader>rn', vim.lsp.buf.rename, 'Rename symbol')
     bind('<leader>ca', vim.lsp.buf.code_action, 'Code action')
@@ -277,6 +288,7 @@ vim.api.nvim_create_autocmd('LspAttach', {
     if client and client.name == 'rust-analyzer' then
       bind('<leader>rr', '<cmd>RustLsp runnables<cr>', 'Rust run targets')
       bind('<leader>rt', '<cmd>RustLsp testables<cr>', 'Rust tests')
+      bind('<leader>tt', '<cmd>RustLsp testables<cr>', 'Rust tests')
       bind('<leader>rm', '<cmd>RustLsp expandMacro<cr>', 'Expand Rust macro')
       bind('<leader>re', '<cmd>RustLsp explainError current<cr>', 'Explain Rust error')
       bind('<leader>ca', '<cmd>RustLsp codeAction<cr>', 'Rust code actions')

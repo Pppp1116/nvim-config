@@ -1,4 +1,4 @@
-# Neovim for Rust, C, C++ and assembly
+# Neovim for Rust, C, C++, Lua and assembly
 
 The leader key is Space. The Mocha theme matches Kitty.
 Type jk quickly to leave insert mode. Leaving insert mode for normal mode formats the current file and saves
@@ -12,6 +12,8 @@ modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not 
 | Space w | Save all modified named buffers |
 | Ctrl+S | Format current file, then save modified named buffers (normal, insert or visual mode) |
 | gd / grr / K | Definition / references / documentation |
+| gri / grt | Implementation / type definition |
+| Space fs / fS | Document / workspace symbols |
 | Space rn / ca | Rename symbol / code action |
 | Space rr / rt | Rust run targets / tests |
 | Space rm / re | Expand Rust macro / explain Rust error |
@@ -35,6 +37,7 @@ modified named buffers. Unnamed drafts stay unsaved. Snippet selection does not 
 | ]h / [h | Next / previous Git hunk |
 | Space hs / hp / hb | Stage hunk / preview hunk / blame current line |
 | Space bb / bc / bs | Build or repeat / set build command / stop build |
+| Space tt / tr | Run current LLVM lit test / repeat last lit test (Space tt opens Rust tests in Rust files) |
 | Space bo, ]q / [q | Open quickfix, next / previous build error |
 | gd in quickfix or terminal Normal mode | Open the source line from compiler output |
 | F10, F11, F12 | Debug step over, step into, step out |
@@ -47,10 +50,17 @@ on focus and terminal exit; unsaved edits are preserved.
 `:term` opens ready for typing in terminal mode. Press Esc to inspect terminal
 output in Normal mode.
 
-Builds save modified named files, run asynchronously from the project root, and fill
+Builds save modified named files, run asynchronously from the build root, and fill
 quickfix with compiler output. Defaults are `cargo build --message-format=short`,
 `cmake --build build` (when configured), or `make`. Use `:Build your command` or
 Space bc to override; Space bb repeats that project's last command for this session.
+The Git root is used as the project root. A build file or configured `build/` at
+that root takes precedence over nested build files. LLVM's `llvm/CMakeLists.txt`
+also selects the repository root; otherwise the nearest build file sets the build root.
+`:Test path/to/test.ll` runs a specific LLVM lit test, and `:TestRepeat` repeats it.
+Space tt tests the current file; Space tr repeats the last lit test. Lit runs from
+the Git root using `build/bin/llvm-lit` or `llvm-lit` on PATH. The build and test
+commands share quickfix and `:BuildStop`.
 Successful builds clear old errors. Custom commands must emit compiler-style
 `file:line:column: message` output or another format supported by `errorformat`.
 In the build quickfix window, press `gd` on an error or warning to open its
@@ -101,6 +111,7 @@ Per-project rust-analyzer.json settings can override the defaults. For example:
 Use :RustAnalyzer restart after changing toolchains, and :RustLsp for Rust tools.
 Rustaceanvim is pinned to version 8 for this Neovim setup.
 C and C++ use `clangd` from PATH. External tools are managed outside Neovim.
+Lua files use `lua_ls` from PATH for completion, diagnostics, and navigation.
 clangd uses background indexing, clang-tidy diagnostics and detailed completions.
 Accepting a C/C++ completion can add the header clangd identifies for that symbol.
 Rust, C and C++ use locally installed Tree-sitter parsers. LLVM IR (`.ll`) is

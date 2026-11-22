@@ -1,6 +1,7 @@
 local M = {}
 local build_job
 local last_commands = {}
+local last_tests = {}
 local terminal_cwd
 
 local function current_list()
@@ -25,19 +26,15 @@ local function stop_build(force)
   end
 end
 
-function M.root()
+local function current_path()
   if vim.bo.buftype == 'terminal' then
     local cwd = terminal_cwd()
-    if cwd then
-      return vim.fs.root(cwd, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or cwd
-    end
+    if cwd then return cwd end
   end
   local name = vim.api.nvim_buf_get_name(0)
   if name:match('^oil://') then
     local cwd = require('oil').get_current_dir()
-    if cwd then
-      return vim.fs.root(cwd, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or cwd
-    end
+    if cwd then return cwd end
   end
   local list = current_list()
   if list then
@@ -55,13 +52,43 @@ function M.root()
     if item and item.bufnr > 0 then
       local filename = vim.api.nvim_buf_get_name(item.bufnr)
       if filename ~= '' then
-        return vim.fs.root(filename, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' })
-          or vim.fs.dirname(filename)
+        return vim.fs.dirname(filename)
       end
     end
   end
-  local start = name ~= '' and vim.fs.dirname(name) or vim.fn.getcwd()
-  return vim.fs.root(start, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' }) or vim.fn.getcwd()
+  return name ~= '' and vim.fs.dirname(name) or vim.fn.getcwd()
+end
+
+function M.project_root()
+  local start = current_path()
+  return vim.fs.root(start, '.git') or M.build_root(start)
+end
+
+function M.build_root(start)
+  start = start or current_path()
+  local git_root = vim.fs.root(start, '.git')
+  local markers = { 'Cargo.toml', 'CMakeLists.txt', 'Makefile' }
+  -- A repository-level build or configured build directory wins over nested CMakeLists.txt files.
+  if git_root then
+    if vim.fn.filereadable(vim.fs.joinpath(git_root, 'build/CMakeCache.txt')) == 1
+        or vim.fn.filereadable(vim.fs.joinpath(git_root, 'llvm/CMakeLists.txt')) == 1 then
+      return git_root
+    end
+    for _, marker in ipairs(markers) do
+      if vim.fn.filereadable(vim.fs.joinpath(git_root, marker)) == 1 then return git_root end
+    end
+  end
+  local dir = start
+  while dir do
+    for _, marker in ipairs(markers) do
+      if vim.fn.filereadable(vim.fs.joinpath(dir, marker)) == 1 then return dir end
+    end
+    if dir == git_root then break end
+    local parent = vim.fs.dirname(dir)
+    if not parent or parent == dir then break end
+    dir = parent
+  end
+  return git_root or start
 end
 
 function M.save_all()
@@ -174,14 +201,14 @@ function M.jump_to_compiler_location()
   end
 
   ::open_location::
-  local root = M.root()
+  local root = M.project_root()
   local filename = path
   if not path:match('^/') then
     local cwd = terminal_cwd()
     local candidates = {}
     if cwd then
       table.insert(candidates, cwd)
-      local project = vim.fs.root(cwd, { 'Cargo.toml', 'CMakeLists.txt', 'Makefile', '.git' })
+      local project = vim.fs.root(cwd, '.git') or M.build_root(cwd)
       if project then table.insert(candidates, project) end
     end
     table.insert(candidates, root)
@@ -230,12 +257,60 @@ function M.jump_to_compiler_location()
   vim.cmd('normal! zz')
 end
 
-function M.build(command)
+local function run_command(command, root, label)
   if build_job then
-    vim.notify('Build already running; :BuildStop cancels it', vim.log.levels.WARN)
+    vim.notify('Command already running; :BuildStop cancels it', vim.log.levels.WARN)
     return
   end
-  local root = M.root()
+  local ok, err = pcall(M.save_all)
+  if not ok then vim.notify(tostring(err), vim.log.levels.ERROR); return end
+  local efm = '%f:%l:%c: %m,%f:%l: %m,' .. vim.o.errorformat
+  vim.notify(label .. ': ' .. command)
+  local job = { cancelled = false }
+  local started, process = pcall(vim.system, { vim.o.shell, '-c', command },
+      { cwd = root, text = true, detach = true }, function(result)
+    vim.schedule(function()
+      if build_job == job then build_job = nil end
+      if job.cancelled then
+        vim.notify(label .. ' cancelled', vim.log.levels.INFO)
+        return
+      end
+      local succeeded = result.code == 0 and (result.signal or 0) == 0
+      local stdout, stderr = result.stdout or '', result.stderr or ''
+      local output = stdout .. (stdout ~= '' and stderr ~= '' and not stdout:match('\n$') and '\n' or '') .. stderr
+      if not succeeded and output == '' then
+        local reason = (result.signal or 0) ~= 0 and ('signal ' .. result.signal)
+          or ('status ' .. tostring(result.code or 'unknown'))
+        output = label .. ' ended with ' .. reason .. ' and produced no output'
+      end
+      local cwd = vim.fn.getcwd()
+      vim.fn.chdir(root)
+      local parsed_ok, parsed_err = pcall(vim.fn.setqflist, {}, ' ', {
+        title = command, lines = output == '' and {} or vim.split(output, '\n', { trimempty = true }), efm = efm,
+        context = { cwd = root, exit_code = result.code },
+      })
+      vim.fn.chdir(cwd)
+      if not parsed_ok then vim.notify(tostring(parsed_err), vim.log.levels.ERROR); return end
+      if not succeeded or #vim.tbl_filter(function(item) return item.valid == 1 end, vim.fn.getqflist()) > 0 then
+        vim.cmd.copen()
+      else
+        vim.cmd.cclose()
+      end
+      vim.notify(succeeded and (label .. ' succeeded') or (label .. ' failed; see quickfix'),
+        succeeded and vim.log.levels.INFO or vim.log.levels.WARN)
+    end)
+  end)
+  if not started then
+    vim.notify('Could not start ' .. label:lower() .. ': ' .. tostring(process), vim.log.levels.ERROR)
+    return false
+  end
+  job.process = process
+  build_job = job
+  return true
+end
+
+function M.build(command)
+  local root = M.build_root()
   if not command or command == '' then
     command = last_commands[root]
     if not command then
@@ -253,52 +328,30 @@ function M.build(command)
       end
     end
   end
-  local ok, err = pcall(M.save_all)
-  if not ok then vim.notify(tostring(err), vim.log.levels.ERROR); return end
-  last_commands[root] = command
-  local efm = '%f:%l:%c: %m,%f:%l: %m,' .. vim.o.errorformat
-  vim.notify('Building: ' .. command)
-  local job = { cancelled = false }
-  local started, process = pcall(vim.system, { vim.o.shell, '-c', command },
-      { cwd = root, text = true, detach = true }, function(result)
-    vim.schedule(function()
-      if build_job == job then build_job = nil end
-      if job.cancelled then
-        vim.notify('Build cancelled', vim.log.levels.INFO)
-        return
-      end
-      local succeeded = result.code == 0 and (result.signal or 0) == 0
-      local stdout, stderr = result.stdout or '', result.stderr or ''
-      local output = stdout .. (stdout ~= '' and stderr ~= '' and not stdout:match('\n$') and '\n' or '') .. stderr
-      if not succeeded and output == '' then
-        local reason = (result.signal or 0) ~= 0 and ('signal ' .. result.signal)
-          or ('status ' .. tostring(result.code or 'unknown'))
-        output = 'Build command ended with ' .. reason .. ' and produced no output'
-      end
-      local cwd = vim.fn.getcwd()
-      -- Resolve relative compiler paths against the build directory.
-      vim.fn.chdir(root)
-      local parsed_ok, parsed_err = pcall(vim.fn.setqflist, {}, ' ', {
-        title = command, lines = output == '' and {} or vim.split(output, '\n', { trimempty = true }), efm = efm,
-        context = { cwd = root, exit_code = result.code },
-      })
-      vim.fn.chdir(cwd)
-      if not parsed_ok then vim.notify(tostring(parsed_err), vim.log.levels.ERROR); return end
-      if not succeeded or #vim.tbl_filter(function(item) return item.valid == 1 end, vim.fn.getqflist()) > 0 then
-        vim.cmd.copen()
-      else
-        vim.cmd.cclose()
-      end
-      vim.notify(succeeded and 'Build succeeded' or 'Build failed; see quickfix',
-        succeeded and vim.log.levels.INFO or vim.log.levels.WARN)
-    end)
-  end)
-  if not started then
-    vim.notify('Could not start build: ' .. tostring(process), vim.log.levels.ERROR)
+  if run_command(command, root, 'Build') then last_commands[root] = command end
+end
+
+function M.test(path)
+  local root = M.project_root()
+  if not path or path == '' then path = vim.api.nvim_buf_get_name(0) end
+  if path == '' then vim.notify('Choose a lit test with :Test path', vim.log.levels.WARN); return end
+  local target = path:match('^/') and path or vim.fs.joinpath(root, path)
+  if vim.fn.filereadable(target) == 0 and vim.fn.isdirectory(target) == 0 then
+    vim.notify('Test path not found: ' .. target, vim.log.levels.ERROR)
     return
   end
-  job.process = process
-  build_job = job
+  local lit = vim.fs.joinpath(root, 'build/bin/llvm-lit')
+  if vim.fn.executable(lit) ~= 1 then lit = vim.fn.exepath('llvm-lit') end
+  if lit == '' then vim.notify('llvm-lit is not available in build/bin or PATH', vim.log.levels.ERROR); return end
+  local command = vim.fn.shellescape(lit) .. ' ' .. vim.fn.shellescape(target)
+  if run_command(command, root, 'Test') then last_tests[root] = command end
+end
+
+function M.repeat_test()
+  local root = M.project_root()
+  local command = last_tests[root]
+  if not command then vim.notify('No test to repeat for this project', vim.log.levels.WARN); return end
+  run_command(command, root, 'Test')
 end
 
 function M.setup_debugger()
@@ -315,13 +368,13 @@ function M.setup_debugger()
     dap.configurations[ft] = { {
       name = 'Launch executable (system LLDB)', type = 'lldb', request = 'launch',
       program = function()
-        local root = M.root()
+        local root = M.build_root()
         local prefix = ft == 'rust' and '/target/debug/' or '/build/'
         local path = vim.fn.input('Executable: ', root .. prefix, 'file')
         if path == '' then return dap.ABORT end
         return vim.fn.fnamemodify(path, ':p')
       end,
-      cwd = M.root, stopOnEntry = false,
+      cwd = M.build_root, stopOnEntry = false,
     } }
   end
   -- External tools are managed outside Neovim; loading DAP never downloads them.
@@ -367,6 +420,9 @@ function M.setup()
   end })
   vim.api.nvim_create_user_command('Build', function(opts) M.build(opts.args) end, { nargs = '*', force = true })
   vim.api.nvim_create_user_command('BuildStop', function() stop_build(false) end, { force = true })
+  vim.api.nvim_create_user_command('Test', function(opts) M.test(opts.args) end,
+    { nargs = '?', complete = 'file', force = true })
+  vim.api.nvim_create_user_command('TestRepeat', M.repeat_test, { force = true })
   local map = vim.keymap.set
   map('n', '<leader>gg', '<cmd>Git<cr>', { desc = 'Git status' })
   map('n', '<leader>gb', '<cmd>Telescope git_branches<cr>', { desc = 'Git branches' })
@@ -385,6 +441,8 @@ function M.setup()
   end, { desc = 'Set and run build command' })
   map('n', '<leader>bs', '<cmd>BuildStop<cr>', { desc = 'Stop build' })
   map('n', '<leader>bo', '<cmd>copen<cr>', { desc = 'Open build quickfix' })
+  map('n', '<leader>tt', function() M.test() end, { desc = 'Run current lit test' })
+  map('n', '<leader>tr', M.repeat_test, { desc = 'Repeat last lit test' })
   map('n', ']q', '<cmd>cnext<cr>', { desc = 'Next quickfix error' })
   map('n', '[q', '<cmd>cprevious<cr>', { desc = 'Previous quickfix error' })
   local function debug_key(key, method, description)
