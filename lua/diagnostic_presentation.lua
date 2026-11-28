@@ -25,7 +25,8 @@ local function code(d)
 end
 
 function M.quiet(d)
-  return (d.source == 'rustc' or d.source == 'rust-analyzer') and quiet[code(d)] == true
+  return d.severity ~= vim.diagnostic.severity.ERROR
+    and (d.source == 'rustc' or d.source == 'rust-analyzer') and quiet[code(d)] == true
 end
 
 -- A compiler diagnostic wins over a live analyzer diagnostic for the same
@@ -50,6 +51,7 @@ function M.visible(d, all)
       if start then
         for _, other in ipairs(all) do
           if other ~= d and other.source == 'rustc' and code(other) == key
+            and other.severity <= d.severity
             and other.lnum == start.line and other.col == start.character
             and vim.tbl_get(other, 'user_data', 'lsp', 'data', 'rendered') then
             return false
@@ -60,7 +62,8 @@ function M.visible(d, all)
   end
   if d.source ~= 'rust-analyzer' or not key then return true end
   for _, other in ipairs(all) do
-    if other.source == 'rustc' and code(other) == key and overlaps(d, other) then
+    if other.source == 'rustc' and code(other) == key and overlaps(d, other)
+      and other.severity <= d.severity then
       return false
     end
   end
@@ -80,6 +83,8 @@ local function short_message(d)
 end
 
 function M.setup()
+  if M._setup then return end
+  M._setup = true
   -- Native handlers receive an aggregate Rust view. They never change the
   -- stored diagnostics, so floats, navigation, code actions and loclists see
   -- the full LSP result. Non-Rust buffers retain the native handlers.
@@ -102,7 +107,7 @@ function M.setup()
     local all = vim.diagnostic.get(bufnr, { enabled = true })
     local visible = {}
     for _, d in ipairs(all) do
-      if M.show_all or M.visible(d, all) then visible[#visible + 1] = d end
+      if M.show_all or M.visible(d, all) then visible[#visible + 1] = vim.deepcopy(d) end
     end
     -- vim.diagnostic.show() clamps cached positions before invoking handlers.
     -- Calling the handlers directly requires the same adjustment after filtering.

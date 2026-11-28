@@ -8,7 +8,10 @@ vim.opt.signcolumn = 'yes'
 vim.opt.cursorline = true
 vim.opt.mouse = 'a'
 vim.opt.clipboard = 'unnamedplus'
-vim.opt.swapfile = false
+vim.opt.swapfile = true
+local swap_dir = vim.fn.stdpath('state') .. '/swap'
+vim.fn.mkdir(swap_dir, 'p', 448)
+vim.opt.directory = swap_dir .. '//'
 vim.opt.undofile = true
 local undo_dir = vim.fn.stdpath('state') .. '/undo'
 vim.fn.mkdir(undo_dir, 'p', 448) -- 0700
@@ -33,6 +36,7 @@ vim.opt.pumheight = 8
 vim.filetype.add({ extension = { ll = 'llvm' } })
 local fish = vim.fn.exepath('fish')
 if fish ~= '' then vim.opt.shell = fish end
+vim.g.auto_format_save = false
 
 -- Use the user's Rust toolchain without changing the login shell.
 vim.env.PATH = vim.fn.expand('~/.cargo/bin') .. ':' .. vim.fn.expand('~/.local/bin') .. ':' .. vim.env.PATH
@@ -44,6 +48,15 @@ if not vim.uv.fs_stat(lazy) then
 end
 vim.opt.rtp:prepend(lazy)
 
+local winbar = {
+  lualine_a = {}, lualine_b = {},
+  lualine_c = { { function() return require('ui').path() end,
+    color = { fg = '#cdd6f4', gui = 'bold' } } },
+  lualine_x = { { function() return require('ui').context() end,
+    color = { fg = '#a6adc8' } } },
+  lualine_y = {}, lualine_z = {},
+}
+
 require('lazy').setup({
   { 'catppuccin/nvim', name = 'catppuccin', priority = 1000,
     config = function()
@@ -52,7 +65,8 @@ require('lazy').setup({
     end },
   { 'nvim-lualine/lualine.nvim', opts = {
     options = { theme = 'catppuccin-mocha', icons_enabled = false, globalstatus = true,
-      component_separators = '', section_separators = '' },
+      component_separators = '', section_separators = '',
+      disabled_filetypes = { winbar = { 'oil', 'qf', 'TelescopePrompt', 'OverseerList', 'OverseerOutput' } } },
     sections = {
       lualine_a = { { 'mode', fmt = function(s) return s:sub(1, 1) end } },
       lualine_b = { { 'branch', cond = function() return vim.o.columns >= 80 end } },
@@ -72,6 +86,8 @@ require('lazy').setup({
       lualine_y = { { 'filetype', cond = function() return vim.o.columns >= 80 end } },
       lualine_z = { 'location', 'progress' },
     },
+    winbar = winbar,
+    inactive_winbar = winbar,
     extensions = { 'oil', 'quickfix' },
   } },
   { 'lewis6991/gitsigns.nvim', opts = {
@@ -79,13 +95,14 @@ require('lazy').setup({
     current_line_blame_opts = { delay = 1000, virt_text_pos = 'eol' },
     current_line_blame_formatter = '  <author> · <author_time:%R> · <summary>',
   } },
-  { 'SmiteshP/nvim-navic', opts = { icons = { enabled = false }, lazy_update_context = true } },
+  { 'SmiteshP/nvim-navic', opts = { icons = { enabled = false } } },
   { 'tpope/vim-fugitive', cmd = { 'Git', 'G', 'Gdiffsplit', 'Gvdiffsplit', 'Gread', 'Gwrite' } },
   { 'mg979/vim-visual-multi', branch = 'master',
     keys = { { '<C-n>', mode = { 'n', 'x' } }, { '<C-Down>' }, { '<C-Up>' } },
     init = function() vim.g.VM_leader = '\\' end },
   { 'mfussenegger/nvim-dap', lazy = true,
     config = function() require('workflows').setup_debugger() end },
+  { 'stevearc/overseer.nvim', opts = {}, cmd = { 'OverseerRun', 'OverseerToggle', 'OverseerOpen' } },
   { 'folke/which-key.nvim', opts = {} },
   { 'nvim-mini/mini.pairs', version = false, opts = {} },
   { 'nvim-mini/mini.surround', version = false, opts = {} },
@@ -107,7 +124,12 @@ require('lazy').setup({
     default_file_explorer = true,
     -- File-extension and named-directory icons; Kitty bundles the symbol font.
     columns = { 'icon' },
-    view_options = { show_hidden = true },
+    delete_to_trash = true,
+    skip_confirm_for_simple_edits = false,
+    view_options = {
+      show_hidden = true,
+      is_always_hidden = function(name) return name == '.git' end,
+    },
   } },
   { 'saghen/blink.cmp', version = '1.*', opts = {
     keymap = { preset = 'default', ['<CR>'] = { 'accept', 'fallback' } },
@@ -151,13 +173,28 @@ require('lazy').setup({
             -- Resolve from the Rust file's directory, even if Neovim was opened elsewhere.
             local cwd = vim.fn.expand('%:p:h')
             if cwd == '' then cwd = vim.fn.getcwd() end
-            local result = vim.system({ 'rustup', 'which', 'rust-analyzer' },
-              { cwd = cwd, text = true }):wait()
+            if vim.fn.executable('rustup') ~= 1 then
+              vim.notify('rustup is unavailable; cannot resolve rust-analyzer', vim.log.levels.ERROR)
+              return {}
+            end
+            local ok, process = pcall(vim.system, { 'rustup', 'which', 'rust-analyzer' },
+              { cwd = cwd, text = true })
+            if not ok then
+              vim.notify('Could not start rustup: ' .. tostring(process), vim.log.levels.ERROR)
+              return {}
+            end
+            local result = process:wait(2000)
+            if not result then
+              process:kill(15)
+              vim.notify('Timed out resolving rust-analyzer for ' .. cwd, vim.log.levels.ERROR)
+              return {}
+            end
             local rust_analyzer = result.stdout and vim.trim(result.stdout) or ''
             if result.code ~= 0 or vim.fn.executable(rust_analyzer) ~= 1 then
-              vim.notify('Install rust-analyzer for the project toolchain with rustup component add rust-analyzer',
+              vim.notify('rust-analyzer unavailable for the project toolchain: ' .. cwd ..
+                '. Install its component with rustup component add rust-analyzer',
                 vim.log.levels.ERROR)
-              return { 'rust-analyzer' }
+              return {}
             end
             return { rust_analyzer }
           end,
@@ -223,6 +260,13 @@ require('lazy').setup({
 }, { install = { missing = false }, checker = { enabled = false }, change_detection = { notify = false } })
 
 local map = vim.keymap.set
+require('which-key').add({
+  { '<leader>f', group = 'Find' }, { '<leader>c', group = 'Code' },
+  { '<leader>x', group = 'Diagnostics' }, { '<leader>g', group = 'Git' },
+  { '<leader>b', group = 'Build' }, { '<leader>t', group = 'Tests' },
+  { '<leader>d', group = 'Debugger' }, { '<leader>r', group = 'Rust' },
+  { '<leader>u', group = 'Editor UI' }, { '<leader>l', group = 'LLVM' },
+})
 map('i', 'jk', '<Esc>', { desc = 'Leave insert mode' })
 map('t', '<Esc>', '<C-\\><C-n>', { desc = 'Enter terminal normal mode' })
 local function format_and_save_all(bufnr)
@@ -244,20 +288,39 @@ end, { desc = 'Format current file and save all buffers' })
 vim.api.nvim_create_autocmd('InsertLeave', {
   group = vim.api.nvim_create_augroup('UserFormatAndSaveOnInsertLeave', { clear = true }),
   callback = function(event)
+    if not vim.g.auto_format_save then return end
     local buf = event.buf
     -- Snippet placeholders can enter Select mode and trigger InsertLeave.
     -- Wait for the mode transition before deciding whether to format.
     vim.schedule(function()
-      if not vim.api.nvim_buf_is_loaded(buf) or vim.api.nvim_get_current_buf() ~= buf then return end
+      if not vim.g.auto_format_save or not vim.api.nvim_buf_is_loaded(buf)
+        or vim.api.nvim_get_current_buf() ~= buf or not vim.bo[buf].modified
+        or vim.api.nvim_buf_get_name(buf) == '' or vim.bo[buf].buftype ~= '' then return end
       local mode = vim.api.nvim_get_mode().mode
       if mode:match('^[sS]') or mode == '\19' then return end
-      if mode:match('^n') then format_and_save_all(buf) end
+      if mode:match('^n') then
+        if vim.b[buf].auto_format_saving then return end
+        vim.b[buf].auto_format_saving = true
+        local ok, err = pcall(function()
+          if #vim.lsp.get_clients({ bufnr = buf, method = 'textDocument/formatting' }) > 0 then
+            vim.lsp.buf.format({ bufnr = buf, async = false, timeout_ms = 1000 })
+          end
+          if vim.bo[buf].modified then vim.api.nvim_buf_call(buf, function() vim.cmd.write() end) end
+        end)
+        vim.b[buf].auto_format_saving = false
+        if not ok then vim.notify('Automatic format/save failed: ' .. tostring(err), vim.log.levels.WARN) end
+      end
     end)
   end,
   desc = 'Format and save after leaving insert mode for normal mode',
 })
+map('n', '<leader>uf', function()
+  vim.g.auto_format_save = not vim.g.auto_format_save
+  vim.notify('Automatic format/save ' .. (vim.g.auto_format_save and 'enabled' or 'disabled'))
+end, { desc = 'Toggle automatic format and save' })
 map('n', '<leader>w', function() require('workflows').save_all() end, { desc = 'Save all named modified buffers' })
 map('n', '<leader><space>', '<cmd>Oil<cr>', { desc = 'Browse files' })
+map('n', '-', '<cmd>Oil<cr>', { desc = 'Browse current file directory' })
 map('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { desc = 'Find files' })
 map('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { desc = 'Search project text' })
 map('n', '<leader>fb', '<cmd>Telescope buffers<cr>', { desc = 'Find open buffers' })
@@ -269,19 +332,23 @@ map('n', '<C-h>', '<C-w>h', { desc = 'Focus left split' })
 map('n', '<C-j>', '<C-w>j', { desc = 'Focus lower split' })
 map('n', '<C-k>', '<C-w>k', { desc = 'Focus upper split' })
 map('n', '<C-l>', '<C-w>l', { desc = 'Focus right split' })
-map('n', '<leader>d', vim.diagnostic.open_float, { desc = 'Show diagnostic' })
-local inline_diagnostic_options = { spacing = 2 }
-map('n', '<leader>ud', function()
+map('n', '<leader>xd', vim.diagnostic.open_float, { desc = 'Show diagnostic popup' })
+map('n', '<leader>xt', function()
   vim.diagnostic.enable(not vim.diagnostic.is_enabled())
 end, { desc = 'Toggle diagnostics' })
-map('n', '<leader>ua', function()
+map('n', '<leader>xa', function()
   require('diagnostic_presentation').toggle_all()
 end, { desc = 'Toggle full Rust diagnostics' })
-map('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'List diagnostics' })
-map('n', '<leader>f', function() vim.lsp.buf.format({ async = true }) end, { desc = 'Format file' })
+map('n', '<leader>xq', vim.diagnostic.setloclist, { desc = 'Open diagnostic location list' })
+map('n', '<leader>cf', function()
+  if #vim.lsp.get_clients({ bufnr = 0, method = 'textDocument/formatting' }) == 0 then
+    vim.notify('No formatter is attached', vim.log.levels.WARN); return
+  end
+  vim.lsp.buf.format({ async = true })
+end, { desc = 'Format current file' })
 
-vim.diagnostic.config({ severity_sort = true, underline = true, update_in_insert = true,
-  virtual_text = inline_diagnostic_options, float = { border = 'rounded' } })
+vim.diagnostic.config({ severity_sort = true, underline = true, update_in_insert = false,
+  virtual_text = { spacing = 2 }, float = { border = 'rounded' } })
 require('diagnostic_presentation').setup()
 require('ui').setup()
 vim.api.nvim_create_autocmd('LspAttach', {
@@ -296,30 +363,76 @@ vim.api.nvim_create_autocmd('LspAttach', {
     if client and client:supports_method('textDocument/inlayHint', event.buf) then
       vim.lsp.inlay_hint.enable(true, { bufnr = event.buf })
     end
-    local function bind(key, action, desc)
-      map('n', key, action, { buffer = event.buf, desc = desc })
+  end,
+})
+map('n', 'gd', vim.lsp.buf.definition, { desc = 'Go to definition' })
+map('n', 'grr', vim.lsp.buf.references, { desc = 'Find references' })
+map('n', 'gri', vim.lsp.buf.implementation, { desc = 'Go to implementation' })
+map('n', 'grt', vim.lsp.buf.type_definition, { desc = 'Go to type definition' })
+map('n', 'K', vim.lsp.buf.hover, { desc = 'Documentation' })
+local function supported(method)
+  return #vim.lsp.get_clients({ bufnr = 0, method = method }) > 0
+end
+local function rust_action(command)
+  if vim.bo.filetype ~= 'rust' or vim.fn.exists(':RustLsp') == 0
+    or #vim.lsp.get_clients({ bufnr = 0, name = 'rust-analyzer' }) == 0 then
+    vim.notify('Rust Analyzer is not attached', vim.log.levels.WARN); return
+  end
+  vim.cmd('RustLsp ' .. command)
+end
+map('n', '<leader>fs', '<cmd>Telescope lsp_document_symbols<cr>', { desc = 'Find document symbols' })
+map('n', '<leader>fS', '<cmd>Telescope lsp_dynamic_workspace_symbols<cr>', { desc = 'Find workspace symbols' })
+map('n', '<leader>cr', function()
+  if supported('textDocument/rename') then vim.lsp.buf.rename()
+  else vim.notify('Rename is unavailable', vim.log.levels.WARN) end
+end, { desc = 'Rename symbol' })
+map('n', '<leader>ca', function()
+  if vim.bo.filetype == 'rust' and #vim.lsp.get_clients({ bufnr = 0, name = 'rust-analyzer' }) > 0 then
+    rust_action('codeAction')
+  elseif supported('textDocument/codeAction') then vim.lsp.buf.code_action()
+  else vim.notify('Code actions are unavailable', vim.log.levels.WARN) end
+end, { desc = 'Code actions' })
+map('n', '<leader>uh', function()
+  local buf = vim.api.nvim_get_current_buf()
+  if not supported('textDocument/inlayHint') then
+    vim.notify('Inlay hints are unavailable', vim.log.levels.WARN); return
+  end
+  vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled({ bufnr = buf }), { bufnr = buf })
+end, { desc = 'Toggle inlay hints' })
+vim.api.nvim_create_autocmd('FileType', {
+  group = vim.api.nvim_create_augroup('UserLanguageMappings', { clear = true }),
+  pattern = 'rust', callback = function(event)
+    local function rust_map(key, command, desc)
+      map('n', '<leader>' .. key, function() rust_action(command) end,
+        { buffer = event.buf, desc = desc })
     end
-    bind('gd', vim.lsp.buf.definition, 'Go to definition')
-    bind('grr', vim.lsp.buf.references, 'Find references')
-    bind('gri', vim.lsp.buf.implementation, 'Go to implementation')
-    bind('grt', vim.lsp.buf.type_definition, 'Go to type definition')
-    bind('<leader>fs', '<cmd>Telescope lsp_document_symbols<cr>', 'Find document symbols')
-    bind('<leader>fS', '<cmd>Telescope lsp_dynamic_workspace_symbols<cr>', 'Find workspace symbols')
-    bind('K', vim.lsp.buf.hover, 'Documentation')
-    bind('<leader>rn', vim.lsp.buf.rename, 'Rename symbol')
-    bind('<leader>ca', vim.lsp.buf.code_action, 'Code action')
-    bind('<leader>ih', function()
-      vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled({ bufnr = event.buf }), { bufnr = event.buf })
-    end, 'Toggle type hints')
-    if client and client.name == 'rust-analyzer' then
-      bind('<leader>rr', '<cmd>RustLsp runnables<cr>', 'Rust run targets')
-      bind('<leader>rt', '<cmd>RustLsp testables<cr>', 'Rust tests')
-      bind('<leader>tt', '<cmd>RustLsp testables<cr>', 'Rust tests')
-      bind('<leader>rm', '<cmd>RustLsp expandMacro<cr>', 'Expand Rust macro')
-      bind('<leader>re', '<cmd>RustLsp explainError current<cr>', 'Explain Rust error')
-      bind('<leader>ca', '<cmd>RustLsp codeAction<cr>', 'Rust code actions')
-    elseif client and client.name == 'clangd' then
-      bind('<leader>ch', '<cmd>LspClangdSwitchSourceHeader<cr>', 'Switch C/C++ source and header')
+    rust_map('rr', 'runnables', 'Rust run targets')
+    rust_map('rm', 'expandMacro', 'Expand Rust macro')
+    rust_map('xe', 'explainError current', 'Explain current Rust error')
+    rust_map('xr', 'renderDiagnostic current', 'Show formatted Rust diagnostic')
+    rust_map('xR', 'renderDiagnostic cycle', 'Next formatted Rust diagnostic')
+    rust_map('xl', 'relatedDiagnostics', 'Go to related Rust locations')
+  end,
+})
+vim.api.nvim_create_autocmd('FileType', {
+  group = 'UserLanguageMappings', pattern = { 'c', 'cpp' }, callback = function(event)
+    map('n', '<leader>ch', function()
+      if #vim.lsp.get_clients({ bufnr = 0, name = 'clangd' }) > 0 then
+        vim.cmd('LspClangdSwitchSourceHeader')
+      else vim.notify('Clangd is not attached', vim.log.levels.WARN) end
+    end, { buffer = event.buf, desc = 'Switch C/C++ source and header' })
+  end,
+})
+vim.api.nvim_create_autocmd('FileType', {
+  group = 'UserLanguageMappings', pattern = '*', callback = function(event)
+    local ft = vim.bo[event.buf].filetype
+    if ft ~= 'rust' then
+      for _, key in ipairs({ 'rr', 'rm', 'xe', 'xr', 'xR', 'xl' }) do
+        pcall(vim.keymap.del, 'n', '<leader>' .. key, { buffer = event.buf })
+      end
+    end
+    if ft ~= 'c' and ft ~= 'cpp' then
+      pcall(vim.keymap.del, 'n', '<leader>ch', { buffer = event.buf })
     end
   end,
 })

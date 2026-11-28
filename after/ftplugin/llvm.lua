@@ -16,7 +16,8 @@ local function check()
   local this_run = run
   local tick = vim.api.nvim_buf_get_changedtick(buf)
   local source = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), '\n') .. '\n'
-  vim.system({ 'llvm-as', '--disable-output', '-' }, { stdin = source, text = true }, function(result)
+  local ok, err = pcall(vim.system, { 'llvm-as', '--disable-output', '-' },
+    { stdin = source, text = true }, function(result)
     vim.schedule(function()
       if not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].filetype ~= 'llvm' or this_run ~= run
           or vim.api.nvim_buf_get_changedtick(buf) ~= tick then return end
@@ -39,6 +40,7 @@ local function check()
       end
     end)
   end)
+  if not ok then vim.notify('Could not start llvm-as: ' .. tostring(err), vim.log.levels.ERROR) end
 end
 
 vim.api.nvim_buf_create_user_command(buf, 'LLVMCheck', check, { desc = 'Validate LLVM IR with llvm-as' })

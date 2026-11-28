@@ -13,17 +13,16 @@ local function current_list()
   return vim.fn.getqflist({ items = 1, context = 1 }), false
 end
 
-local function stop_build(force)
-  local job = build_job
-  if not job or (job.cancelled and not force) then return end
-  job.cancelled = true
-  -- Each build owns a process group, including compiler subprocesses.
-  vim.uv.kill(-job.process.pid, force and 9 or 15)
-  if not force then
-    vim.defer_fn(function()
-      if build_job == job then vim.uv.kill(-job.process.pid, 9) end
-    end, 1000)
+local function stop_build()
+  local task = build_job
+  if not task then return end
+  local handle = task.strategy and task.strategy.handle
+  if handle and handle.pid then
+    -- Detached system tasks lead their process group; stop compiler children too.
+    pcall(vim.uv.kill, -handle.pid, 15)
   end
+  task:stop()
+  if build_job == task then build_job = nil end
 end
 
 local function current_path()
@@ -92,21 +91,34 @@ function M.build_root(start)
 end
 
 function M.save_all()
+  local failures = {}
   for _, info in ipairs(vim.fn.getbufinfo({ bufloaded = 1, bufmodified = 1 })) do
     local bufnr = info.bufnr
     if vim.api.nvim_buf_is_loaded(bufnr) then
       local buftype = vim.bo[bufnr].buftype
-      if vim.api.nvim_buf_get_name(bufnr) ~= '' and (buftype == '' or buftype == 'acwrite') then
-        vim.api.nvim_buf_call(bufnr, function() vim.cmd.write() end)
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if name ~= '' and not name:find('://', 1, true) and buftype == '' then
+        local ok, err = pcall(vim.api.nvim_buf_call, bufnr, function() vim.cmd.write() end)
+        if not ok then
+          failures[#failures + 1] = name .. ': ' .. tostring(err):match('^[^\n]+')
+        elseif vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modified then
+          failures[#failures + 1] = name .. ': buffer remains modified after write'
+        end
       end
     end
   end
+  if #failures > 0 then
+    vim.notify('Failed to save:\n' .. table.concat(failures, '\n'), vim.log.levels.ERROR)
+    return false, failures
+  end
+  return true
 end
 
 local function source_location(text)
   -- Keep spaces inside filenames; only trim diagnostic prefixes and outer padding.
   text = text:gsub('\27%[[%d;]*m', '')
   text = text:gsub('^%s*%-%->%s*', ''):gsub('^%s*:::%s*', '')
+  text = text:gsub('^%s*at%s+', '')
   text = vim.trim(text)
   local path, line, column = text:match('^(.-)|(%d+)%s+col%s+(%d+)|')
   if not path then path, line, column = text:match('^(.-)|(%d+)|%s*(%d+)') end
@@ -121,6 +133,18 @@ local function source_location(text)
   end
   line, column = tonumber(line), tonumber(column) or 1
   if path ~= '' and line > 0 and column > 0 then return path, line, column end
+end
+M.source_location = source_location
+
+-- rustc columns count Unicode characters; the cursor API expects a byte offset.
+function M.source_byte_column(text, column, rust)
+  if type(column) ~= 'number' or column < 1 or column ~= math.floor(column) then return 0 end
+  local offset = column - 1
+  if rust then
+    local ok, byte = pcall(vim.str_byteindex, text, 'utf-32', offset, false)
+    if ok then return math.min(byte, #text) end
+  end
+  return math.min(offset, #text)
 end
 
 local function diagnostic_heading(text)
@@ -239,20 +263,7 @@ function M.jump_to_compiler_location()
   vim.cmd.edit(vim.fn.fnameescape(filename))
   local target = math.max(1, math.min(line or 1, vim.api.nvim_buf_line_count(0)))
   local text = vim.api.nvim_buf_get_lines(0, target - 1, target, false)[1]
-  local byte_col = math.max(0, (column or 1) - 1)
-  local char_col = vim.str_byteindex(text, 'utf-32', byte_col, false)
-  if char_col ~= byte_col then
-    if vim.bo.filetype == 'rust' then
-      byte_col = char_col
-    else
-      -- GCC counts characters; Clang counts bytes. Prefer the candidate at a token start.
-      local function word_start(offset)
-        return text:sub(offset + 1, offset + 1):match('[%w_]')
-          and not text:sub(offset, offset):match('[%w_]')
-      end
-      if word_start(char_col) and not word_start(byte_col) then byte_col = char_col end
-    end
-  end
+  local byte_col = M.source_byte_column(text, column or 1, vim.bo.filetype == 'rust')
   vim.api.nvim_win_set_cursor(0, { target, math.min(byte_col, #text) })
   vim.cmd('normal! zz')
 end
@@ -262,50 +273,53 @@ local function run_command(command, root, label)
     vim.notify('Command already running; :BuildStop cancels it', vim.log.levels.WARN)
     return
   end
-  local ok, err = pcall(M.save_all)
-  if not ok then vim.notify(tostring(err), vim.log.levels.ERROR); return end
-  local efm = '%f:%l:%c: %m,%f:%l: %m,' .. vim.o.errorformat
-  vim.notify(label .. ': ' .. command)
-  local job = { cancelled = false }
-  local started, process = pcall(vim.system, { vim.o.shell, '-c', command },
-      { cwd = root, text = true, detach = true }, function(result)
-    vim.schedule(function()
-      if build_job == job then build_job = nil end
-      if job.cancelled then
-        vim.notify(label .. ' cancelled', vim.log.levels.INFO)
-        return
-      end
-      local succeeded = result.code == 0 and (result.signal or 0) == 0
-      local stdout, stderr = result.stdout or '', result.stderr or ''
-      local output = stdout .. (stdout ~= '' and stderr ~= '' and not stdout:match('\n$') and '\n' or '') .. stderr
-      if not succeeded and output == '' then
-        local reason = (result.signal or 0) ~= 0 and ('signal ' .. result.signal)
-          or ('status ' .. tostring(result.code or 'unknown'))
-        output = label .. ' ended with ' .. reason .. ' and produced no output'
-      end
-      local cwd = vim.fn.getcwd()
-      vim.fn.chdir(root)
-      local parsed_ok, parsed_err = pcall(vim.fn.setqflist, {}, ' ', {
-        title = command, lines = output == '' and {} or vim.split(output, '\n', { trimempty = true }), efm = efm,
-        context = { cwd = root, exit_code = result.code },
-      })
-      vim.fn.chdir(cwd)
-      if not parsed_ok then vim.notify(tostring(parsed_err), vim.log.levels.ERROR); return end
-      if not succeeded or #vim.tbl_filter(function(item) return item.valid == 1 end, vim.fn.getqflist()) > 0 then
-        vim.cmd.copen()
-      else
-        vim.cmd.cclose()
-      end
-      vim.notify(succeeded and (label .. ' succeeded') or (label .. ' failed; see quickfix'),
-        succeeded and vim.log.levels.INFO or vim.log.levels.WARN)
-    end)
-  end)
-  if not started then
-    vim.notify('Could not start ' .. label:lower() .. ': ' .. tostring(process), vim.log.levels.ERROR)
+  if not M.save_all() then return false end
+  local loaded, overseer = pcall(require, 'overseer')
+  if not loaded then
+    vim.notify('Install Overseer with :Lazy install overseer.nvim', vim.log.levels.ERROR)
     return false
   end
-  job.process = process
-  build_job = job
+  local efm = '%f:%l:%c: %m,%f:%l: %m,' .. vim.o.errorformat
+  local created, task = pcall(overseer.new_task, {
+    name = label .. ': ' .. command,
+    cmd = command,
+    cwd = root,
+    strategy = { 'system', wrap_opts = { detach = true } },
+    components = {
+      { 'on_output_quickfix', errorformat = efm, relative_file_root = root,
+        tail = false, open_on_exit = 'failure', open_on_match = true, close = true },
+      'default',
+    },
+  })
+  if not created then
+    vim.notify('Could not create ' .. label:lower() .. ' task: ' .. tostring(task), vim.log.levels.ERROR)
+    return false
+  end
+  build_job = task
+  task:subscribe('on_complete', function(_, status)
+    if build_job == task then build_job = nil end
+    if status ~= overseer.STATUS.FAILURE then return end
+    local list = vim.fn.getqflist({ context = 1, items = 1 })
+    if list.context ~= task.id then return end
+    local has_output = false
+    for _, item in ipairs(list.items) do
+      if item.valid == 1 then return end
+      if vim.trim(item.text) ~= '' and not item.text:match('^%[Process exited %d+%]$') then
+        has_output = true
+      end
+    end
+    if not has_output then
+      vim.fn.setqflist({}, 'r', { title = task.name, context = task.id,
+        items = { { text = label .. ' failed (exit status ' .. tostring(task.exit_code or 'unknown') .. ')' } } })
+    end
+    vim.cmd.copen()
+  end)
+  local started, start_err = pcall(function() task:start() end)
+  if not started then
+    build_job = nil
+    vim.notify('Could not start ' .. label:lower() .. ': ' .. tostring(start_err), vim.log.levels.ERROR)
+    return false
+  end
   return true
 end
 
@@ -332,6 +346,10 @@ function M.build(command)
 end
 
 function M.test(path)
+  if (not path or path == '') and vim.bo.filetype ~= 'llvm' then
+    vim.notify('Select a Rust test in a Rust buffer or pass an LLVM lit path to :Test', vim.log.levels.WARN)
+    return false
+  end
   local root = M.project_root()
   if not path or path == '' then path = vim.api.nvim_buf_get_name(0) end
   if path == '' then vim.notify('Choose a lit test with :Test path', vim.log.levels.WARN); return end
@@ -416,10 +434,10 @@ function M.setup()
     group = group, callback = function() vim.cmd('checktime') end,
   })
   vim.api.nvim_create_autocmd('VimLeavePre', { group = group, callback = function()
-    stop_build(true)
+    stop_build()
   end })
   vim.api.nvim_create_user_command('Build', function(opts) M.build(opts.args) end, { nargs = '*', force = true })
-  vim.api.nvim_create_user_command('BuildStop', function() stop_build(false) end, { force = true })
+  vim.api.nvim_create_user_command('BuildStop', stop_build, { force = true })
   vim.api.nvim_create_user_command('Test', function(opts) M.test(opts.args) end,
     { nargs = '?', complete = 'file', force = true })
   vim.api.nvim_create_user_command('TestRepeat', M.repeat_test, { force = true })
@@ -429,23 +447,31 @@ function M.setup()
   map('n', '<leader>gl', '<cmd>Telescope git_commits<cr>', { desc = 'Git commit log' })
   map('n', '<leader>gc', '<cmd>Git commit<cr>', { desc = 'Git commit' })
   map('n', '<leader>gB', '<cmd>Git blame<cr>', { desc = 'Blame current file' })
-  map('n', '<leader>ug', function() require('gitsigns').toggle_signs() end, { desc = 'Toggle Git signs' })
-  map('n', '<leader>ub', function() require('gitsigns').toggle_current_line_blame() end,
+  map('n', '<leader>gu', function() require('gitsigns').toggle_signs() end, { desc = 'Toggle Git signs' })
+  map('n', '<leader>gi', function() require('gitsigns').toggle_current_line_blame() end,
     { desc = 'Toggle inline Git blame' })
   map('n', ']h', function() require('gitsigns').nav_hunk('next') end, { desc = 'Next Git hunk' })
   map('n', '[h', function() require('gitsigns').nav_hunk('prev') end, { desc = 'Previous Git hunk' })
-  map('n', '<leader>hs', function() require('gitsigns').stage_hunk() end, { desc = 'Stage hunk' })
-  map('n', '<leader>hp', function() require('gitsigns').preview_hunk() end, { desc = 'Preview hunk' })
-  map('n', '<leader>hb', function() require('gitsigns').blame_line({ full = true }) end, { desc = 'Blame line' })
-  map('n', '<leader>hd', function() require('gitsigns').diffthis() end, { desc = 'Diff file against Git index' })
+  map('n', '<leader>gs', function() require('gitsigns').stage_hunk() end, { desc = 'Stage hunk' })
+  map('n', '<leader>gp', function() require('gitsigns').preview_hunk() end, { desc = 'Preview hunk' })
+  map('n', '<leader>gh', function() require('gitsigns').blame_line({ full = true }) end, { desc = 'Blame line' })
+  map('n', '<leader>gd', function() require('gitsigns').diffthis() end, { desc = 'Diff file against Git index' })
   map('n', '<leader>bb', function() M.build() end, { desc = 'Build / repeat build' })
   map('n', '<leader>bc', function()
     vim.ui.input({ prompt = 'Build command: ' }, function(input) if input and input ~= '' then M.build(input) end end)
   end, { desc = 'Set and run build command' })
   map('n', '<leader>bs', '<cmd>BuildStop<cr>', { desc = 'Stop build' })
   map('n', '<leader>bo', '<cmd>copen<cr>', { desc = 'Open build quickfix' })
-  map('n', '<leader>tt', function() M.test() end, { desc = 'Run current lit test' })
-  map('n', '<leader>tr', M.repeat_test, { desc = 'Repeat last lit test' })
+  map('n', '<leader>tt', function()
+    if vim.bo.filetype == 'rust' then vim.cmd('RustLsp testables')
+    elseif vim.bo.filetype == 'llvm' then M.test()
+    else vim.notify('No test selector for this filetype', vim.log.levels.WARN) end
+  end, { desc = 'Select Rust tests or run current LLVM lit test' })
+  map('n', '<leader>tr', function()
+    if vim.bo.filetype == 'rust' then vim.cmd('RustLsp! testables')
+    elseif vim.bo.filetype == 'llvm' then M.repeat_test()
+    else vim.notify('No repeatable test for this filetype', vim.log.levels.WARN) end
+  end, { desc = 'Repeat previous Rust or LLVM test' })
   map('n', ']q', '<cmd>cnext<cr>', { desc = 'Next quickfix error' })
   map('n', '[q', '<cmd>cprevious<cr>', { desc = 'Previous quickfix error' })
   local function debug_key(key, method, description)

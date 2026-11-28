@@ -12,6 +12,7 @@
   "nvim-navic": { "branch": "master", "commit": "455808fd0fae06e6d70fadfd61432275db8f34ce" },
   "nvim-treesitter": { "branch": "main", "commit": "60c0f468de3e636fa660a419d537e8033aca4e39" },
   "oil.nvim": { "branch": "master", "commit": "d3733d933833a0e59b813ecec99341527adf0c28" },
+  "overseer.nvim": { "branch": "master", "commit": "a93d9f6d6defdac4bcd6d2c8ba988650e42e0a0e" },
   "plenary.nvim": { "branch": "master", "commit": "74b06c6c75e4eeb3108ec01852001636d85a932b" },
   "rustaceanvim": { "branch": "main", "commit": "f69c85a955b9a83d495e3dc8d43adb6364a0b765" },
   "telescope.nvim": { "branch": "master", "commit": "40aedd8a68c78a656a10a8d62d80c54af59420fb" },
