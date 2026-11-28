@@ -273,12 +273,16 @@ map('n', '<leader>d', vim.diagnostic.open_float, { desc = 'Show diagnostic' })
 local inline_diagnostic_options = { spacing = 2 }
 map('n', '<leader>ud', function()
   vim.diagnostic.enable(not vim.diagnostic.is_enabled())
-end, { desc = 'Toggle all diagnostics' })
+end, { desc = 'Toggle diagnostics' })
+map('n', '<leader>ua', function()
+  require('diagnostic_presentation').toggle_all()
+end, { desc = 'Toggle full Rust diagnostics' })
 map('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'List diagnostics' })
 map('n', '<leader>f', function() vim.lsp.buf.format({ async = true }) end, { desc = 'Format file' })
 
 vim.diagnostic.config({ severity_sort = true, underline = true, update_in_insert = true,
   virtual_text = inline_diagnostic_options, float = { border = 'rounded' } })
+require('diagnostic_presentation').setup()
 require('ui').setup()
 vim.api.nvim_create_autocmd('LspAttach', {
   group = vim.api.nvim_create_augroup('UserLsp', { clear = true }),
