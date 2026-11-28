@@ -5,6 +5,7 @@ vim.bo.softtabstop = 2
 
 local buf = vim.api.nvim_get_current_buf()
 local ns = vim.api.nvim_create_namespace('UserLLVMAs')
+local group = vim.api.nvim_create_augroup('UserLLVMAsBuffer' .. buf, { clear = true })
 local run = 0
 
 local function check()
@@ -45,11 +46,23 @@ end
 
 vim.api.nvim_buf_create_user_command(buf, 'LLVMCheck', check, { desc = 'Validate LLVM IR with llvm-as' })
 vim.keymap.set('n', '<leader>lc', check, { buffer = buf, desc = 'Validate LLVM IR' })
-local check_autocmd = vim.api.nvim_create_autocmd('BufWritePost', {
-  buffer = buf, callback = check, desc = 'Validate saved LLVM IR',
+vim.api.nvim_create_autocmd('BufWritePost', {
+  group = group, buffer = buf, callback = check, desc = 'Validate saved LLVM IR',
+})
+vim.api.nvim_create_autocmd('FileType', {
+  group = group, buffer = buf, callback = function()
+    if vim.bo[buf].filetype == 'llvm' then return end
+    run = run + 1 -- Invalidate a pending llvm-as result.
+    vim.diagnostic.reset(ns, buf)
+    pcall(vim.keymap.del, 'n', '<leader>lc', { buffer = buf })
+    pcall(vim.api.nvim_buf_del_user_command, buf, 'LLVMCheck')
+    vim.api.nvim_del_augroup_by_id(group)
+  end,
+})
+vim.api.nvim_create_autocmd('BufDelete', {
+  group = group, buffer = buf, callback = function()
+    vim.api.nvim_del_augroup_by_id(group)
+  end,
 })
 vim.b.undo_ftplugin = (vim.b.undo_ftplugin or '')
-  .. (' | call nvim_del_autocmd(%d)'):format(check_autocmd)
-  .. (" | call luaeval('vim.diagnostic.reset(_A[1], _A[2])', [%d, %d])"):format(ns, buf)
-  .. ' | silent! delcommand LLVMCheck | silent! nunmap <buffer> <leader>lc'
   .. ' | setlocal commentstring< shiftwidth< softtabstop<'

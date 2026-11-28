@@ -33,12 +33,16 @@ end
 -- coded span. Both originals remain in Neovim's diagnostic store.
 local function overlaps(a, b)
   if a.lnum ~= b.lnum then return false end
-  local a_end = a.end_lnum == a.lnum and a.end_col or a.col + 1
-  local b_end = b.end_lnum == b.lnum and b.end_col or b.col + 1
+  local a_end = math.max(a.col + 1, a.end_lnum == a.lnum and (a.end_col or a.col) or a.col + 1)
+  local b_end = math.max(b.col + 1, b.end_lnum == b.lnum and (b.end_col or b.col) or b.col + 1)
   return a.col < b_end and b.col < a_end
 end
 
-function M.visible(d, all)
+local function same_message(a, b)
+  return (a.message or ''):match('^[^\n]*') == (b.message or ''):match('^[^\n]*')
+end
+
+function M.visible(d, all, rustc_index)
   if M.quiet(d) then return false end
   local key = code(d)
   if d.source == 'rustc' and d.severity == vim.diagnostic.severity.HINT and key
@@ -49,7 +53,8 @@ function M.visible(d, all)
     for _, info in ipairs(type(related) == 'table' and related or {}) do
       local start = vim.tbl_get(info, 'location', 'range', 'start')
       if start then
-        for _, other in ipairs(all) do
+        local candidates = rustc_index and ((rustc_index[key] or {})[start.line] or {}) or all
+        for _, other in ipairs(candidates) do
           if other ~= d and other.source == 'rustc' and code(other) == key
             and other.severity <= d.severity
             and other.lnum == start.line and other.col == start.character
@@ -61,9 +66,10 @@ function M.visible(d, all)
     end
   end
   if d.source ~= 'rust-analyzer' or not key then return true end
-  for _, other in ipairs(all) do
+  local candidates = rustc_index and ((rustc_index[key] or {})[d.lnum] or {}) or all
+  for _, other in ipairs(candidates) do
     if other.source == 'rustc' and code(other) == key and overlaps(d, other)
-      and other.severity <= d.severity then
+      and other.severity == d.severity and same_message(d, other) then
       return false
     end
   end
@@ -80,6 +86,22 @@ local function short_message(d)
   if type(key) == 'table' then key = key.value end
   if key and key ~= '' then return ('[%s] %s'):format(key, message) end
   return message
+end
+
+local function severity_allowed(filter, severity)
+  if not filter then return true end
+  local to_number = function(value)
+    return type(value) == 'string' and vim.diagnostic.severity[value:upper()] or value
+  end
+  if type(filter) ~= 'table' then return severity == to_number(filter) end
+  if filter.min or filter.max then
+    return severity <= (to_number(filter.min) or vim.diagnostic.severity.HINT)
+      and severity >= (to_number(filter.max) or vim.diagnostic.severity.ERROR)
+  end
+  for _, value in ipairs(filter) do
+    if severity == to_number(value) then return true end
+  end
+  return false
 end
 
 function M.setup()
@@ -105,9 +127,20 @@ function M.setup()
     -- positions captured here. Wait so we can clamp against the actual lines.
     if not vim.api.nvim_buf_is_loaded(bufnr) then return end
     local all = vim.diagnostic.get(bufnr, { enabled = true })
+    local rustc_index = {}
+    for _, d in ipairs(all) do
+      if d.source == 'rustc' and code(d) then
+        local key = code(d)
+        rustc_index[key] = rustc_index[key] or {}
+        rustc_index[key][d.lnum] = rustc_index[key][d.lnum] or {}
+        table.insert(rustc_index[key][d.lnum], d)
+      end
+    end
     local visible = {}
     for _, d in ipairs(all) do
-      if M.show_all or M.visible(d, all) then visible[#visible + 1] = vim.deepcopy(d) end
+      if M.show_all or M.visible(d, all, rustc_index) then
+        visible[#visible + 1] = vim.deepcopy(d)
+      end
     end
     -- vim.diagnostic.show() clamps cached positions before invoking handlers.
     -- Calling the handlers directly requires the same adjustment after filtering.
@@ -125,9 +158,23 @@ function M.setup()
       end
     end
     local config = vim.diagnostic.config()
+    local namespace_options = {}
+    local function display_allowed(name, d)
+      local ns = d.namespace
+      if not ns then return true end
+      if not namespace_options[ns] then
+        namespace_options[ns] = vim.diagnostic.config(nil, ns)
+      end
+      local value = namespace_options[ns][name]
+      if value == nil then return true end
+      if type(value) == 'function' then value = value(ns, bufnr) end
+      if value == false then return false end
+      return severity_allowed(type(value) == 'table' and value.severity or nil, d.severity)
+    end
     for _, name in ipairs(names) do
       handlers[name].hide(display_ns, bufnr)
       local enabled = config[name]
+      if type(enabled) == 'function' then enabled = enabled(display_ns, bufnr) end
       if enabled then
         local opts = vim.tbl_extend('force', config, {
           [name] = type(enabled) == 'table' and vim.deepcopy(enabled) or {},
@@ -135,8 +182,12 @@ function M.setup()
         if name == 'virtual_text' then
           opts.virtual_text.format = short_message
         end
-        handlers[name].show(display_ns, bufnr,
-          name == 'underline' and not M.show_all and prominent or visible, opts)
+        local candidates = name == 'underline' and not M.show_all and prominent or visible
+        local shown = {}
+        for _, d in ipairs(candidates) do
+          if display_allowed(name, d) then shown[#shown + 1] = d end
+        end
+        handlers[name].show(display_ns, bufnr, shown, opts)
       end
     end
   end

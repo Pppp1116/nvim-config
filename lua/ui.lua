@@ -1,6 +1,7 @@
 local M = {}
 
 local paths = {}
+local contexts = {}
 local context_kinds = { [2] = true, [3] = true, [4] = true, [5] = true,
   [6] = true, [9] = true, [10] = true, [11] = true, [12] = true, [23] = true }
 local function display_window()
@@ -12,12 +13,21 @@ end
 -- each window's cursor, so use this guarded adapter until Navic exposes that.
 local function symbol_data(buf, win)
   local ok, lib = pcall(require, 'nvim-navic.lib')
-  if ok and type(lib.update_context) == 'function' and type(lib.get_tree) == 'function'
-    and lib.get_tree(buf) then
-    local updated = pcall(lib.update_context, buf, vim.api.nvim_win_get_cursor(win))
-    if updated then return require('nvim-navic').get_data(buf) end
+  if not ok or type(lib.update_context) ~= 'function' or type(lib.get_tree) ~= 'function' then
+    return nil
   end
-  return nil
+  local tree = lib.get_tree(buf)
+  if not tree then return nil end
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local cached = contexts[win]
+  if cached and cached.buf == buf and cached.tree == tree
+    and cached.line == cursor[1] and cached.col == cursor[2] then return cached.data end
+  if not pcall(lib.update_context, buf, cursor) then return nil end
+  local available, navic = pcall(require, 'nvim-navic')
+  if not available then return nil end
+  local data = navic.get_data(buf)
+  contexts[win] = { buf = buf, tree = tree, line = cursor[1], col = cursor[2], data = data }
+  return data
 end
 
 local function source_buffer()
@@ -66,7 +76,8 @@ end
 function M.context()
   local buf, _, win = source_buffer()
   if not buf then return '' end
-  local navic = require('nvim-navic')
+  local available, navic = pcall(require, 'nvim-navic')
+  if not available then return '' end
   if not navic.is_available(buf) then return '' end
   local names = {}
   for _, item in ipairs(symbol_data(buf, win) or {}) do
@@ -86,17 +97,31 @@ end
 function M.setup()
   local group = vim.api.nvim_create_augroup('UserWinbarData', { clear = true })
   vim.api.nvim_create_autocmd('BufDelete', {
-    group = group, callback = function(event) paths[event.buf] = nil end,
+    group = group, callback = function(event)
+      paths[event.buf] = nil
+      for win, entry in pairs(contexts) do
+        if entry.buf == event.buf then contexts[win] = nil end
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd('WinClosed', {
+    group = group, callback = function(event) contexts[tonumber(event.match)] = nil end,
   })
   vim.api.nvim_create_autocmd('LspDetach', {
     group = group, callback = function(event)
       if vim.b[event.buf].navic_client_id ~= event.data.client_id then return end
+      for win, entry in pairs(contexts) do
+        if entry.buf == event.buf then contexts[win] = nil end
+      end
       vim.b[event.buf].navic_client_id = nil
       vim.b[event.buf].navic_client_name = nil
       local ok, lib = pcall(require, 'nvim-navic.lib')
       if ok and type(lib.clear_buffer_data) == 'function' then
         pcall(lib.clear_buffer_data, event.buf)
       end
+      -- Navic 455808f keeps its buffer-local symbol requests after detach.
+      -- Its next attach recreates them, so remove the old client's callbacks.
+      pcall(vim.api.nvim_clear_autocmds, { group = 'navic', buffer = event.buf })
     end,
   })
 end

@@ -46,7 +46,9 @@ still means definition in source and source navigation in terminal/quickfix.
 ## Build and test
 
 Builds save modified named files, run as Overseer tasks from the build root, and fill
-quickfix with compiler output. `:OverseerToggle` shows the task list and output.
+quickfix with compiler output. A failed save prevents the task from starting. Space bs
+sends SIGTERM to the verified build process group and SIGKILL after one second if
+original group members remain; the same cleanup runs on Neovim exit. `:OverseerToggle` shows the task list and output.
 Defaults are `cargo build --message-format=short`,
 `cmake --build build` (when configured), or `make`. Use `:Build your command` or
 Space bc to override. Space bb repeats that build root's last command for this session.
@@ -55,19 +57,24 @@ that root takes precedence over nested build files. LLVM's `llvm/CMakeLists.txt`
 also selects the repository root. Otherwise, the nearest build file sets the build root.
 
 `:Test path/to/test.ll` runs a specific LLVM lit test. `:TestRepeat` repeats the
-last lit command for the project. Space tt opens Rustaceanvim test selection in Rust buffers or runs the current LLVM lit file. Space tr repeats the last selected Rust test with `:RustLsp! testables` or the last LLVM lit test for that project. Other filetypes receive a notification. Lit runs from the Git root using `build/bin/llvm-lit` or
+last lit command for the project. Space tt opens Rustaceanvim test selection in Rust buffers or runs the current LLVM lit file. Space tr repeats the last selected Rust test with `:RustLsp! testables` or the last LLVM lit test for that project. Before any Rust test is selected, Rustaceanvim opens test selection instead. Other filetypes receive a notification. Lit runs from the Git root using `build/bin/llvm-lit` or
 `llvm-lit` on PATH. Build and test commands share quickfix and `:BuildStop`.
 
 Successful builds clear old errors. Custom commands must emit compiler-style
 `file:line:column: message` output or another format supported by `errorformat`.
 In quickfix, press `gd` on an error or warning to open its source line. In a
-terminal running Cargo, press `Esc`, move to an `at`, `-->` or `:::` location (or nearby
-diagnostic text), then press `gd`. Relative terminal paths use the shell's current
+terminal running Cargo, press `Esc`, move to an `at`, `-->` or `:::` location (or a
+nearby backtrace frame heading), then press `gd`. Navigation opens source in an
+ordinary editor window and preserves terminal and modified output buffers. Relative terminal paths use the shell's current
 directory, including after `cd`. In source files, `gd` goes to definition.
+Rust compiler locations use character columns; Rust `at` backtrace frames use
+byte columns. C/C++ navigation chooses the column that starts a token when
+GCC's character count and Clang's byte count differ. Neovim diagnostic location
+lists already use byte columns and are opened without another conversion.
 
 ## Editing and completion
 
-Swap files for recovery of unsaved changes and persistent undo are stored in separate Neovim state directories across restarts. Unmodified
+Swap files for recovery of unsaved changes and persistent undo are stored in separate Neovim state directories across restarts. If a state directory cannot be created or written, Neovim reports the problem and disables that recovery feature for the session. Unmodified
 buffers reload after external changes, including branch switches. Checks run on
 focus and terminal exit; unsaved edits are preserved. `:term` opens ready for
 typing. Press `Esc` to inspect terminal output in normal mode.
@@ -93,7 +100,8 @@ Long paths and symbol chains shorten to keep the filename and nearest function
 visible. Terminals, Oil, quickfix and other special windows have no top bar.
 Lualine draws the top bar using Navic's public symbol data. A guarded Navic
 internal call refreshes context for each window's cursor because the public
-API only caches one context per buffer. The global status
+API only caches one context per buffer. Symbol context is cached per window until
+its cursor or Navic symbol tree changes. The global status
 bar shows the short mode, Git branch, filename with modified or readonly marker,
 Git added/changed/deleted counts, diagnostic errors and warnings,
 file type, line and column, and file percentage. Git counts appear at widths of at
@@ -101,8 +109,12 @@ least 100 columns; branch and file type appear at 80 columns. Diagnostic counts
 include language server diagnostics and LLVM IR checks from `llvm-as`.
 Inline blame, when toggled on, appears after a short pause as author, relative
 date and commit summary at the end of the current line.
-`Ctrl+S` formats the current file through the attached language server, then saves
+`Ctrl+S` formats the current file with one deterministic language server, then saves
 modified named buffers. It still saves named buffers when no formatter is attached.
+Space cf requests formatting asynchronously; its result is ignored if the buffer
+changes before the reply. A formatting timeout or error is reported. Ctrl+S still
+saves the current text after a formatting error; automatic format/save stops without
+writing when formatting fails.
 Automatic formatting and saving are off by default. Space uf enables it for the session: leaving Insert mode for Normal mode formats and saves only the modified current named ordinary buffer. Snippet selection does not trigger it. Formatting errors leave edits in the buffer and show a warning. `:w` saves the current buffer; Space w saves modified named buffers without
 formatting. Visual Multi uses its default backslash leader; `Esc` exits multicursor mode.
 Inline diagnostics refresh after leaving insert mode; `cargo check` diagnostics
@@ -114,8 +126,8 @@ lint codes (`unused_imports`, `unused_variables`, `unused_mut`,
 `clippy::redundant_clone`), while
 errors, including warnings promoted to errors, safety warnings and unknown codes stay visible. Rust underlines apply
 only to visible errors and warnings. Redundant rust-analyzer/rustc diagnostics
-and secondary compiler spans appear once inline when they have the same coded
-location. The original diagnostics remain in Space xd, Space xq and diagnostic
+appear once inline only when code, severity, message and location agree; distinct
+errors remain visible. Secondary compiler spans are shown once. The original diagnostics remain in Space xd, Space xq and diagnostic
 navigation; code actions remain available with Space ca. Space xr displays the
 compiler's colored diagnostic with notes, help and source context when
 rust-analyzer supplies it; press Enter in its popup to open a split. Space xe
@@ -125,7 +137,14 @@ be turned off when needed with Space uh.
 ## Language support
 
 Rust Analyzer is selected by rustup from each Rust file's project toolchain,
-even when Neovim was started outside the project. rustfmt and Clippy also use rustup.
+even when Neovim was started outside the project. Resolution has a two-second
+timeout and a short cache. Missing Rustup, toolchains and components produce one
+useful notification per project instead of launching an invalid command. New Rust
+files attach after their first save, once the file exists.
+Rustaceanvim 8 shares an active analyzer across workspaces before evaluating the
+next project's command; when two projects need different analyzer binaries, the
+second automatic attachment is skipped with a notification. Open those projects
+in separate Neovim instances. rustfmt and Clippy also use rustup.
 Rustaceanvim manages the single Rust language server, with `cargo check` on save,
 build scripts, procedural macros, auto-import/snippet completion, run/test targets,
 macro expansion and error explanations. Rust-src is installed for standard-library
@@ -155,9 +174,10 @@ with `cargo install asm-lsp` for assembly completion and navigation. Run
 
 ## Setup and debugging
 
-Run `:Lazy install` once to download declared plugins, including Overseer.
-Missing plugins are not downloaded automatically at startup, so offline launches
-work. `lazy-lock.json`
+Install `lazy.nvim` first, then run `:Lazy install` once to download declared
+plugins, including Overseer. Missing plugins are not downloaded automatically at
+startup. If `lazy.nvim` itself is missing, Neovim opens with its built-in editing
+features and reports that plugins need installation. `lazy-lock.json`
 records installed plugin revisions. Use `:Lazy` to manage plugins and
 `:checkhealth vim.lsp` to troubleshoot language servers.
 
@@ -182,6 +202,12 @@ Rust toolchain binaries are added to Neovim's PATH. In a shell, use
 
 ## Configuration tests
 
-Run `nvim --headless -u init.lua '+luafile tests/run.lua' '+qa!'` from this
-repository. The tests exercise mappings, diagnostics, location parsing, Unicode
-columns and independent saves. Installed plugins and Neovim 0.12 are required.
+Run `python3 tests/run.py` from this repository. The runner gives Neovim
+disposable state and cache directories, exits nonzero on failure, and checks
+startup without plugins. Tests cover mappings, invalid contexts, diagnostics,
+Rust Analyzer resolution, formatting races, Unicode locations, independent
+saves, plugin-buffer contexts, real build process cancellation and Rustaceanvim's
+repeat command. The full suite requires the installed
+plugins, Python 3, Linux `/proc`, and Neovim 0.12. Restart Neovim after changing
+this configuration; sourcing `init.lua` inside a running editor is not a supported
+reload path.

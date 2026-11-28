@@ -53,8 +53,19 @@ for _, input in ipairs({ 'at ./src/config.rs:42:24',
 end
 local spaced = workflows.source_location('at ./src/my config.rs:42:24')
 check(spaced == './src/my config.rs', 'filename spaces lost')
+local colored = workflows.source_location('\27[31m--> ./src/config.rs:42:24\27[0m')
+check(colored == './src/config.rs', 'ANSI-colored source location failed')
+check(workflows.source_location('at ./src/config.rs:0:24') == nil,
+  'invalid line number was accepted')
+local _, _, _, kind = workflows.source_location('at ./src/config.rs:42:24')
+check(kind == 'backtrace', 'backtrace column origin lost')
 check(workflows.source_byte_column('éx', 2, true) == 2, 'Unicode column conversion wrong')
-check(workflows.source_byte_column('éx', 2, false) == 1, 'byte column conversion wrong')
+check(workflows.source_byte_column('éx', 3, false, true) == 2,
+  'diagnostic byte column was converted as characters')
+check(workflows.source_byte_column('int main(){ int é=1; return nope; }', 30, false) == 29,
+  'Clang byte column conversion wrong')
+check(workflows.source_byte_column('int main(){ int é=1; return nope; }', 29, false) == 29,
+  'GCC character column conversion wrong')
 
 local temp = vim.fn.tempname()
 vim.fn.mkdir(temp, 'p')
@@ -85,18 +96,56 @@ vim.api.nvim_buf_delete(one, { force = true })
 vim.api.nvim_buf_delete(two, { force = true })
 vim.fn.delete(temp, 'rf')
 
+local external = vim.fn.tempname() .. '.txt'
+vim.fn.writefile({ 'original' }, external)
+local external_buf = vim.fn.bufadd(external)
+vim.fn.bufload(external_buf)
+vim.api.nvim_buf_set_lines(external_buf, 0, 1, false, { 'unsaved edit' })
+vim.wait(1100)
+vim.fn.writefile({ 'external edit' }, external)
+vim.notify = function() end
+local external_saved = workflows.save_all()
+vim.notify = old_notify
+check(not external_saved and vim.fn.readfile(external)[1] == 'external edit',
+  'external file change was overwritten')
+check(vim.bo[external_buf].modified, 'external change discarded unsaved edits')
+vim.api.nvim_buf_delete(external_buf, { force = true })
+vim.fn.delete(external)
+
+local postwrite = vim.fn.tempname() .. '.txt'
+local postwrite_buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_name(postwrite_buf, postwrite)
+vim.api.nvim_buf_set_lines(postwrite_buf, 0, -1, false, { 'before write' })
+local write_group = vim.api.nvim_create_augroup('TestPostWriteChange', { clear = true })
+vim.api.nvim_create_autocmd('BufWritePost', {
+  group = write_group, buffer = postwrite_buf, callback = function()
+    vim.api.nvim_buf_set_lines(postwrite_buf, -1, -1, false, { 'changed on write' })
+  end,
+})
+vim.notify = function() end
+local postwrite_saved = workflows.save_all()
+vim.notify = old_notify
+check(not postwrite_saved and vim.bo[postwrite_buf].modified,
+  'post-write modifications were reported as saved')
+vim.api.nvim_del_augroup_by_id(write_group)
+vim.api.nvim_buf_delete(postwrite_buf, { force = true })
+vim.fn.delete(postwrite)
+
 local test_map = vim.fn.maparg(' tt', 'n', false, true).callback
 local repeat_map = vim.fn.maparg(' tr', 'n', false, true).callback
-local old_cmd, old_test, old_repeat = vim.cmd, workflows.test, workflows.repeat_test
+local old_cmd, old_test, old_repeat, old_clients = vim.cmd, workflows.test,
+  workflows.repeat_test, vim.lsp.get_clients
 local calls = {}
 vim.cmd = function(command) calls[#calls + 1] = command end
+vim.lsp.get_clients = function() return { { name = 'rust-analyzer' } } end
 workflows.test = function() calls[#calls + 1] = 'llvm-test' end
 workflows.repeat_test = function() calls[#calls + 1] = 'llvm-repeat' end
 vim.bo.filetype = 'rust'
 test_map(); repeat_map()
 vim.bo.filetype = 'llvm'
 test_map(); repeat_map()
-vim.cmd, workflows.test, workflows.repeat_test = old_cmd, old_test, old_repeat
+vim.cmd, workflows.test, workflows.repeat_test, vim.lsp.get_clients =
+  old_cmd, old_test, old_repeat, old_clients
 check(vim.deep_equal(calls, { 'RustLsp testables', 'RustLsp! testables',
   'llvm-test', 'llvm-repeat' }), 'language test dispatch wrong')
 
@@ -104,12 +153,32 @@ local rust = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_set_current_buf(rust)
 vim.bo[rust].filetype = 'rust'
 check(map(' rr', 'n') ~= '' and map(' xe', 'n') ~= '', 'Rust mappings missing')
+check(vim.fn.maparg("'", 'i', false, true).buffer == 1, 'Rust apostrophe mapping missing')
 vim.bo[rust].filetype = 'lua'
 check(map(' rr', 'n') == '', 'Rust mapping leaked after filetype change')
+check(vim.fn.maparg("'", 'i', false, true).buffer ~= 1,
+  'Rust apostrophe mapping leaked after filetype change')
 local llvm = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_set_current_buf(llvm)
 vim.bo[llvm].filetype = 'llvm'
 check(map(' lc', 'n') ~= '', 'LLVM mapping missing')
+local executable_before, system_before, notice_before =
+  vim.fn.executable, vim.system, vim.notify
+local llvm_spawned = false
+vim.fn.executable = function(name)
+  if name == 'llvm-as' then return 0 end
+  return executable_before(name)
+end
+vim.system = function() llvm_spawned = true end
+vim.notify = function() end
+vim.fn.maparg(' lc', 'n', false, true).callback()
+vim.fn.executable, vim.system, vim.notify = executable_before, system_before, notice_before
+check(not llvm_spawned, 'missing llvm-as still spawned a process')
+vim.bo[llvm].filetype = 'lua'
+check(map(' lc', 'n') == '', 'LLVM mapping leaked after filetype change')
+check(vim.api.nvim_buf_get_commands(llvm, {}).LLVMCheck == nil,
+  'LLVM command leaked after filetype change')
+vim.bo[llvm].filetype = 'llvm'
 local old_executable, old_system = vim.fn.executable, vim.system
 local notifications = {}
 old_notify = vim.notify
